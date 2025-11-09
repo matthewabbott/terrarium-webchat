@@ -1,0 +1,26 @@
+version: "3.9"
+services:
+  graphql:
+    build:
+      context: ./packages/vps-server
+    command: npm run dev
+    env_file:
+      - ./packages/vps-server/.env.example
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./packages/vps-server:/app
+      - /app/node_modules
+    depends_on: []
+
+  terrarium-client:
+    build:
+      context: ./packages/terrarium-client
+      dockerfile: Dockerfile
+    env_file:
+      - ./packages/terrarium-client/.env.example
+    volumes:
+      - ./packages/terrarium-client:/app
+    command: poetry run python -m src.main
+    depends_on:
+      - graphql

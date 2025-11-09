@@ -1,2 +1,21 @@
 # terrarium-webchat
-Web chat with my locally hosted LLM via an interface exposed on my webpage
+
+Web chat harness for Terra (GLM-4.5 running in `terrarium-agent`). The goal is to serve a gated chat widget on **mbabbott.com** by relaying visitor messages through a GraphQL service on the VPS and back to Terra via an outbound-only worker.
+
+## Repo Layout
+
+```
+.
+├── AGENTS.md              # Contributor quick-reference
+├── DESIGN.md              # Architecture + TODO backlog
+├── docker-compose.yml     # Dev stack (GraphQL relay + worker)
+├── package.json           # npm workspaces definition
+├── packages/
+│   ├── vps-server/        # GraphQL relay (Node/TypeScript)
+│   ├── web-frontend/      # Chat widget (Vite/React)
+│   ├── terrarium-client/  # Outbound worker (Python entrypoint + npm wrapper)
+│   └── shared/            # Shared schema/types/configs
+└── tsconfig.base.json
+```
+
+See `DESIGN.md` for the detailed architecture plan and prioritized backlog.
