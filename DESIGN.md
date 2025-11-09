@@ -42,6 +42,7 @@ Visitor Browser (mbabbott.com) ↔ GraphQL relay on VPS (dice-roller extension)
 - Subscription: `messageStream(chatId)` publishing appended messages.
 - Persistence: lightweight Postgres/SQLite or in-memory store with TTL, since chat volume is low; logs can flush to disk for audits.
 - Security: validate access code, rate-limit per IP, verify `serviceToken` for Terra worker, encrypt BYO API keys at rest (in-memory + sealed box) and purge on chat end.
+- Integration detail: the new Yoga module is exported from `packages/vps-server/src/chatModule.ts`, so dice-roller can import `buildChatModule()` and merge the typeDefs/resolvers directly without copy/pasting SDL.
 
 ### 3. Terrarium Worker (`packages/terrarium-client`)
 - Language flexible (Python fits existing tooling). Responsibilities:
