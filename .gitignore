@@ -5,7 +5,7 @@ node_modules/
 dist/
 .turbo/
 /packages/**/build
-/packages/**/.tsbuildinfo
+/packages/**/*.tsbuildinfo
 .venv/
 venv/
 __pycache__/
