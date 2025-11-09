@@ -12,11 +12,11 @@
     "test": "vitest"
   },
   "dependencies": {
-    "@graphql-yoga/node": "^5.4.0",
     "dotenv": "^16.4.5",
-    "graphql": "^16.9.0",
+    "graphql": "^16.11.0",
+    "graphql-yoga": "^5.13.4",
     "pino": "^9.3.2",
-    "uuid": "^11.0.2",
+    "uuid": "^11.1.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
