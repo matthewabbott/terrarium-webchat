@@ -18,4 +18,4 @@ Web chat harness for Terra (GLM-4.5 running in `terrarium-agent`). The goal is t
 └── tsconfig.base.json
 ```
 
-See `DESIGN.md` for the detailed architecture plan and prioritized backlog.
+See `DESIGN.md` for the detailed architecture plan and prioritized backlog, and `DEPLOYMENT.md` for VPS + worker setup steps.
