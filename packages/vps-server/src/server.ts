@@ -2,9 +2,9 @@ import 'dotenv/config';
 import { createServer } from 'http';
 import pino from 'pino';
 import { createSchema, createYoga, createPubSub } from 'graphql-yoga';
-import { buildChatModule, type PubSubLike } from './chatModule';
-import { InMemoryChatStore } from './store';
-import { loadEnv, type Env } from './env';
+import { buildChatModule, type PubSubLike } from './chatModule.js';
+import { InMemoryChatStore } from './store.js';
+import { loadEnv, type Env } from './env.js';
 
 type AppContext = {
   store: InMemoryChatStore;

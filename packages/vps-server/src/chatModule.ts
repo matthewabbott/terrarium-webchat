@@ -1,6 +1,6 @@
 import { GraphQLScalarType, Kind } from 'graphql';
-import type { Env } from './env';
-import type { ChatRecord, InMemoryChatStore, MessageRecord } from './store';
+import type { Env } from './env.js';
+import type { ChatRecord, InMemoryChatStore, MessageRecord } from './store.js';
 
 export const MESSAGE_TOPIC = 'MESSAGE_STREAM';
 const CHAT_TOPIC = 'CHAT_OPENED';
