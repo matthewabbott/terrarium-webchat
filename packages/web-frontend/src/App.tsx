@@ -64,8 +64,13 @@ export function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  const [terraConnected, setTerraConnected] = useState(false);
+  const [awaitingTerra, setAwaitingTerra] = useState(false);
+  const [lastAckAt, setLastAckAt] = useState<Date | null>(null);
 
   const messageIds = useRef<Set<string>>(new Set());
+  const messageContainerRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const [createChatMutation, { loading: creating }] = useMutation(CREATE_CHAT);
   const [sendMessageMutation, { loading: sending }] = useMutation(SEND_VISITOR_MESSAGE);
@@ -92,6 +97,15 @@ export function App() {
       handleAddMessage(subscriptionData.messageStream);
     }
   }, [subscriptionData, handleAddMessage]);
+
+  useEffect(() => {
+    if (!terraConnected && messages.some((msg) => msg.sender === 'Terra')) {
+      setTerraConnected(true);
+    }
+    if (awaitingTerra && messages.some((msg) => msg.sender === 'Terra')) {
+      setAwaitingTerra(false);
+    }
+  }, [messages, terraConnected, awaitingTerra]);
 
   useEffect(() => {
     sessionStorage.setItem('terrarium-access-code', accessCode);
@@ -135,15 +149,36 @@ export function App() {
       if (result.data?.sendVisitorMessage) {
         handleAddMessage(result.data.sendVisitorMessage);
         setMessageInput('');
+        setAwaitingTerra(true);
+        setLastAckAt(new Date(result.data.sendVisitorMessage.createdAt));
       }
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'Unable to send message');
     }
   };
 
+  useEffect(() => {
+    if (!messageContainerRef.current) return;
+    messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
+  }, [messages]);
+
+  const autoResizeTextarea = useCallback(() => {
+    if (!textareaRef.current) return;
+    textareaRef.current.style.height = 'auto';
+    textareaRef.current.style.height = `${Math.min(200, textareaRef.current.scrollHeight)}px`;
+  }, []);
+
+  useEffect(() => {
+    autoResizeTextarea();
+  }, [messageInput, autoResizeTextarea]);
+
   const messageList = useMemo(() => {
     if (!messages.length) {
-      return <p className="empty">No messages yet. Ask Terra something once the worker is online.</p>;
+      return (
+        <p className="empty">
+          No messages yet. {terraConnected ? 'Ask Terra anything about mbabbott.com.' : 'Terra will reply once she connects.'}
+        </p>
+      );
     }
     return messages.map((msg) => (
       <div key={msg.id} className={`message message--${msg.sender === 'Visitor' ? 'visitor' : 'terra'}`}>
@@ -154,54 +189,87 @@ export function App() {
         <p>{msg.content}</p>
       </div>
     ));
-  }, [messages]);
+  }, [messages, terraConnected]);
+
+  const ackLabel = useMemo(() => {
+    if (!lastAckAt) return null;
+    return `Message sent at ${formatter.format(lastAckAt)}.`;
+  }, [lastAckAt]);
 
   return (
-    <main>
-      <header>
-        <h1>Terrarium Webchat</h1>
-        <p>Use your private access code to open a session with Terra.</p>
+    <div className="page">
+      <header className="hero">
+        <div>
+          <p className="eyebrow">mbabbott.com / Terra</p>
+          <h1>Ask Terra anything.</h1>
+          <p className="subheading">
+            Terra is Matthew&apos;s website concierge. Enter your access code to start a private chat.
+          </p>
+        </div>
+        <div className={`status-dot ${terraConnected ? 'status-dot--online' : 'status-dot--offline'}`}>
+          {terraConnected ? 'Online' : 'Waiting'}
+        </div>
       </header>
 
-      <section className="panel">
-        <form className="access-form" onSubmit={handleCreateChat}>
-          <label>
-            Access code
-            <input
-              value={accessCode}
-              onChange={(event) => setAccessCode(event.target.value)}
-              placeholder="••••••"
-            />
-          </label>
-          <button type="submit" disabled={creating || !accessCode.trim()}>
-            {chat ? 'Regenerate chat' : 'Start chat'}
-          </button>
-        </form>
-        {formError && <p className="error">{formError}</p>}
+      {!chat && (
+        <section className="access-panel">
+          <form className="access-form" onSubmit={handleCreateChat}>
+            <label>
+              Access code
+              <input value={accessCode} onChange={(event) => setAccessCode(event.target.value)} placeholder="••••••" />
+            </label>
+            <button type="submit" disabled={creating || !accessCode.trim()}>
+              {creating ? 'Opening…' : 'Start chat'}
+            </button>
+          </form>
+          {formError && <p className="error">{formError}</p>}
+        </section>
+      )}
+
+      <section className="chat-panel">
+        {!chat && <div className="chat-placeholder">Start a chat to unlock Terra&apos;s responses.</div>}
         {chat && (
-          <p className="status">
-            Chat <code>{chat.id}</code> ({chat.status})
-          </p>
+          <>
+            <div className="chat-meta">
+              <span>Chat ID: {chat.id.slice(0, 8)}</span>
+              <button className="reset-btn" type="button" onClick={resetChat}>
+                Reset chat
+              </button>
+            </div>
+            <div className="log" ref={messageContainerRef} aria-live="polite">
+              {messageList}
+              {awaitingTerra && (
+                <div className="message message--system">
+                  <div className="typing-indicator">
+                    <span />
+                    <span />
+                    <span />
+                  </div>
+                  <p>Terra is thinking…</p>
+                </div>
+              )}
+            </div>
+            <form className="composer" onSubmit={handleSendMessage}>
+              <textarea
+                ref={textareaRef}
+                value={messageInput}
+                onChange={(e) => setMessageInput(e.target.value)}
+                placeholder="Type a message…"
+                disabled={!chat}
+                rows={1}
+                onInput={autoResizeTextarea}
+              />
+              <button type="submit" disabled={!chat || sending || !messageInput.trim()}>
+                {sending ? 'Sending…' : 'Send'}
+              </button>
+            </form>
+            <div className="status-row">
+              {ackLabel && <span>{ackLabel}</span>}
+              {!terraConnected && <span>Terra will answer when the worker connects.</span>}
+            </div>
+          </>
         )}
       </section>
-
-      <section className="panel">
-        <div className="log" aria-live="polite">
-          {messageList}
-        </div>
-        <form className="composer" onSubmit={handleSendMessage}>
-          <textarea
-            value={messageInput}
-            onChange={(e) => setMessageInput(e.target.value)}
-            placeholder={chat ? 'Ask Terra about mbabbott.com…' : 'Start a chat to enable messaging'}
-            disabled={!chat}
-            rows={3}
-          />
-          <button type="submit" disabled={!chat || sending || !messageInput.trim()}>
-            {sending ? 'Sending…' : 'Send'}
-          </button>
-        </form>
-      </section>
-    </main>
+    </div>
   );
 }
