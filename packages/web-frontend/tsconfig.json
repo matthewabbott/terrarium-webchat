@@ -4,7 +4,8 @@
     "jsx": "react-jsx",
     "baseUrl": "./src",
     "types": ["vite/client"],
-    "moduleResolution": "Bundler"
+    "moduleResolution": "Bundler",
+    "lib": ["ES2023", "DOM"]
   },
   "include": ["src"]
 }

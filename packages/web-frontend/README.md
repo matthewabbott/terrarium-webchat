@@ -8,3 +8,7 @@ Vite + React scaffold for the mbabbott.com chat widget. It currently exposes a s
 - `npm run preview` – serve the production build locally
 - `npm run lint` – type-check only
 - `npm run test` – placeholder for component tests
+
+## Next steps
+- Swap the mock relay URL to the shared VPS endpoint once it imports `buildChatModule()`
+- Add richer chat affordances (typing indicator, streaming) after the terrarium worker can post agent messages
