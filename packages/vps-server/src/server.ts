@@ -49,33 +49,47 @@ const wsServer = new WebSocketServer({
   path: yoga.graphqlEndpoint
 });
 
+type EnvelopedExecution = {
+  execute: ReturnType<typeof createYoga>['getEnveloped'] extends (...args: any[]) => infer R ? R extends { execute: infer E } ? E : never : never;
+  subscribe: ReturnType<typeof createYoga>['getEnveloped'] extends (...args: any[]) => infer R ? R extends { subscribe: infer S } ? S : never : never;
+};
+
 useServer(
   {
+    execute: (args) => (args.rootValue as EnvelopedExecution).execute(args as never),
+    subscribe: (args) => (args.rootValue as EnvelopedExecution).subscribe(args as never),
     onSubscribe: async (ctx, _messageId, payload) => {
-      const { schema, execute, subscribe, parse, validate, contextFactory } = yoga.getEnveloped({
-        ...ctx,
-        req: ctx.extra.request,
-        socket: ctx.extra.socket,
-        params: payload
-      });
+      try {
+        const { schema, execute, subscribe, parse, validate, contextFactory } = yoga.getEnveloped({
+          ...ctx,
+          req: ctx.extra.request,
+          socket: ctx.extra.socket,
+          params: payload
+        });
 
-      const document = parse(payload.query ?? '');
-      const validationErrors = validate(schema, document);
-      if (validationErrors.length > 0) {
-        return validationErrors;
+        const document = parse(payload.query ?? '');
+        const validationErrors = validate(schema, document);
+        if (validationErrors.length > 0) {
+          return validationErrors;
+        }
+
+        const contextValue = await contextFactory();
+
+        return {
+          schema,
+          operationName: payload.operationName,
+          document,
+          variableValues: payload.variables,
+          contextValue,
+          rootValue: {
+            execute,
+            subscribe
+          }
+        };
+      } catch (error) {
+        logger.error({ err: error }, 'subscription setup failed');
+        throw error;
       }
-
-      const contextValue = await contextFactory();
-
-      return {
-        schema,
-        operationName: payload.operationName,
-        document,
-        variableValues: payload.variables,
-        execute,
-        subscribe,
-        contextValue
-      };
     }
   },
   wsServer
