@@ -90,3 +90,16 @@ Visitor Browser (mbabbott.com) ↔ GraphQL relay on VPS (dice-roller extension)
 - **Load/Resilience**: Simulate multiple chats to ensure worker queues requests and VPS with 2 GB RAM remains stable; backoff and reconnection logic are required on worker side.
 
 This design mirrors the inverted MCP strategy demonstrated in terrarium-irc while adapting it for a public web channel with stricter auth and content tooling tailored to mbabbott.com.
+
+## Deployment Status & Next Actions (Nov 10, 2025)
+- **Local validation complete**: GraphQL relay + worker + frontend all run locally. Worker polls the relay, calls the real terrarium-agent, and posts replies; frontend streams updates via `messageStream`.
+- **Ready for VPS**:
+  1. Deploy `packages/vps-server` (or import `buildChatModule()` into dice-roller) on the VPS. Set `CHAT_PASSWORD` and `SERVICE_TOKEN`, expose the endpoint at `https://mbabbott.com/graphql`.
+  2. Deploy the worker (`packages/terrarium-client`) on the Terra machine. Point `GRAPHQL_URL` to the public VPS URL (w/ HTTPS) and set `SERVICE_TOKEN`/`AGENT_API_URL` appropriately.
+  3. Build the frontend with `VITE_GRAPHQL_URL` + `VITE_GRAPHQL_WS_URL` targeting the public endpoint and redeploy mbabbott.com with the compiled assets.
+  4. Verify end-to-end by creating a chat via curl or the UI, confirm Terra responses appear, and monitor logs for rate limiting/auth errors.
+- **Open tasks for VPS integration**:
+  - Merge schema into dice-roller or run as a sidecar service managed by pm2/systemd.
+  - Store `.env` secrets securely on both VPS and Terra machines.
+  - Update Nginx (or another reverse proxy) to forward WebSocket traffic (`/graphql`).
+  - Add basic monitoring/log rotation for the relay and worker processes.
