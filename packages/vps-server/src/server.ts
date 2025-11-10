@@ -2,6 +2,8 @@ import 'dotenv/config';
 import { createServer } from 'http';
 import pino from 'pino';
 import { createSchema, createYoga, createPubSub } from 'graphql-yoga';
+import { useServer } from 'graphql-ws/use/ws';
+import { WebSocketServer } from 'ws';
 import { buildChatModule, type PubSubLike } from './chatModule.js';
 import { InMemoryChatStore } from './store.js';
 import { loadEnv, type Env } from './env.js';
@@ -41,6 +43,44 @@ const yoga = createYoga<AppContext>({
 });
 
 const server = createServer(yoga);
+
+const wsServer = new WebSocketServer({
+  server,
+  path: yoga.graphqlEndpoint
+});
+
+useServer(
+  {
+    onSubscribe: async (ctx, _messageId, payload) => {
+      const { schema, execute, subscribe, parse, validate, contextFactory } = yoga.getEnveloped({
+        ...ctx,
+        req: ctx.extra.request,
+        socket: ctx.extra.socket,
+        params: payload
+      });
+
+      const document = parse(payload.query ?? '');
+      const validationErrors = validate(schema, document);
+      if (validationErrors.length > 0) {
+        return validationErrors;
+      }
+
+      const contextValue = await contextFactory();
+
+      return {
+        schema,
+        operationName: payload.operationName,
+        document,
+        variableValues: payload.variables,
+        execute,
+        subscribe,
+        contextValue
+      };
+    }
+  },
+  wsServer
+);
+
 server.listen(env.PORT, () => {
   logger.info({ port: env.PORT }, 'GraphQL relay ready');
 });
