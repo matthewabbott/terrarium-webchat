@@ -3,13 +3,13 @@ import { createServer } from 'http';
 import pino from 'pino';
 import { createSchema, createYoga, createPubSub } from 'graphql-yoga';
 import { buildChatModule, type PubSubLike } from './chatModule';
-import { InMemoryChatStore, type MessageRecord } from './store';
+import { InMemoryChatStore } from './store';
 import { loadEnv, type Env } from './env';
 
 type AppContext = {
   store: InMemoryChatStore;
   env: Env;
-  pubSub: PubSubLike<MessageRecord>;
+  pubSub: PubSubLike;
   requestHeaders: Headers;
 };
 
@@ -29,7 +29,7 @@ const yoga = createYoga<AppContext>({
   context: ({ request }) => ({
     store,
     env,
-    pubSub: pubSub as PubSubLike<MessageRecord>,
+    pubSub: pubSub as PubSubLike,
     requestHeaders: request.headers
   }),
   logging: {

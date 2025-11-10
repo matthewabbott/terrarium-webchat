@@ -23,3 +23,8 @@ const schema = createSchema({
 ```
 
 Provide the same context props (`store`, `env`, `pubSub`, `requestHeaders`) when wiring it into the existing Yoga instance.
+
+### Worker endpoints
+- `openChats` / `messages(chatId)` – require the `x-service-token` header; used by the terrarium worker to poll conversation state.
+- `chatOpened` subscription – emits a `Chat` whenever a visitor starts a new session (also service-token gated).
+- `postAgentMessage` – worker-only mutation for publishing Terra's replies (service token enforced).

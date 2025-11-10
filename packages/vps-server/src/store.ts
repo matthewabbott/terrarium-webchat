@@ -90,6 +90,10 @@ export class InMemoryChatStore {
     return [...(this.messages.get(chatId) ?? [])];
   }
 
+  listOpenChats(): ChatRecord[] {
+    return [...this.chats.values()].filter((chat) => chat.status === 'open');
+  }
+
   private prune(): void {
     const now = Date.now();
     for (const [id, chat] of this.chats.entries()) {

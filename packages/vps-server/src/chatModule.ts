@@ -1,18 +1,19 @@
 import { GraphQLScalarType, Kind } from 'graphql';
 import type { Env } from './env';
-import type { InMemoryChatStore, MessageRecord } from './store';
+import type { ChatRecord, InMemoryChatStore, MessageRecord } from './store';
 
 export const MESSAGE_TOPIC = 'MESSAGE_STREAM';
+const CHAT_TOPIC = 'CHAT_OPENED';
 
-export interface PubSubLike<TPayload> {
-  publish: (event: string, payload: TPayload) => Promise<void> | void;
-  subscribe: (event: string) => AsyncIterable<TPayload>;
+export interface PubSubLike {
+  publish: (event: string, payload: unknown) => Promise<void> | void;
+  subscribe: (event: string) => AsyncIterable<unknown>;
 }
 
 export interface YogaContext {
   store: InMemoryChatStore;
   env: Env;
-  pubSub: PubSubLike<MessageRecord>;
+  pubSub: PubSubLike;
   requestHeaders: Headers;
 }
 
@@ -51,6 +52,8 @@ export function buildChatModule() {
       type Query {
         _health: String!
         chat(id: ID!, accessCode: String!): Chat
+        openChats: [Chat!]!
+        messages(chatId: ID!): [Message!]!
       }
 
       type Mutation {
@@ -61,7 +64,8 @@ export function buildChatModule() {
       }
 
       type Subscription {
-        messageStream(chatId: ID!, accessCode: String!): Message!
+        messageStream(chatId: ID!, accessCode: String): Message!
+        chatOpened: Chat!
       }
     `,
     resolvers: {
@@ -89,33 +93,47 @@ export function buildChatModule() {
       Query: {
         _health: () => 'ok',
         chat: (_root: unknown, args: { id: string; accessCode: string }, ctx: YogaContext) => {
-          ensureAccess(args.accessCode, ctx.env);
+          ensureVisitorAccess(args.accessCode, ctx);
           return ctx.store.getChat(args.id) ?? null;
+        },
+        openChats: (_root: unknown, _args: unknown, ctx: YogaContext) => {
+          ensureServiceAuth(ctx);
+          return ctx.store.listOpenChats();
+        },
+        messages: (_root: unknown, args: { chatId: string }, ctx: YogaContext) => {
+          ensureServiceAuth(ctx);
+          return ctx.store.listMessages(args.chatId);
         }
       },
       Mutation: {
-        createChat: (_root: unknown, args: { accessCode: string; mode: 'terra' | 'external' }, ctx: YogaContext) => {
-          ensureAccess(args.accessCode, ctx.env);
-          return ctx.store.createChat(args.mode);
+        createChat: async (
+          _root: unknown,
+          args: { accessCode: string; mode: 'terra' | 'external' },
+          ctx: YogaContext
+        ) => {
+          ensureVisitorAccess(args.accessCode, ctx);
+          const chat = ctx.store.createChat(args.mode);
+          await ctx.pubSub.publish(CHAT_TOPIC, chat);
+          return chat;
         },
         sendVisitorMessage: (
           _root: unknown,
           args: { chatId: string; content: string; accessCode: string },
           ctx: YogaContext
         ) => {
-          ensureAccess(args.accessCode, ctx.env);
+          ensureVisitorAccess(args.accessCode, ctx);
           const message = ctx.store.appendMessage(args.chatId, 'Visitor', args.content);
           ctx.pubSub.publish(MESSAGE_TOPIC, message);
           return message;
         },
         postAgentMessage: (_root: unknown, args: { chatId: string; content: string }, ctx: YogaContext) => {
-          ensureServiceToken(ctx.requestHeaders, ctx.env);
+          ensureServiceAuth(ctx);
           const message = ctx.store.appendMessage(args.chatId, 'Terra', args.content);
           ctx.pubSub.publish(MESSAGE_TOPIC, message);
           return message;
         },
         closeChat: (_root: unknown, args: { chatId: string; accessCode: string }, ctx: YogaContext) => {
-          ensureAccess(args.accessCode, ctx.env);
+          ensureVisitorAccess(args.accessCode, ctx);
           return ctx.store.closeChat(args.chatId) ?? null;
         }
       },
@@ -123,31 +141,46 @@ export function buildChatModule() {
         messageStream: {
           subscribe: async (
             _root: unknown,
-            args: { chatId: string; accessCode: string },
+            args: { chatId: string; accessCode?: string | null },
             ctx: YogaContext
           ) => {
-            ensureAccess(args.accessCode, ctx.env);
-            const iterator = ctx.pubSub.subscribe(MESSAGE_TOPIC);
+            ensureVisitorAccess(args.accessCode ?? null, ctx);
+            const iterator = ctx.pubSub.subscribe(MESSAGE_TOPIC) as AsyncIterable<MessageRecord>;
             return filterMessages(iterator, args.chatId);
           },
           resolve: (payload: MessageRecord) => payload
+        },
+        chatOpened: {
+          subscribe: async (_root: unknown, _args: unknown, ctx: YogaContext) => {
+            ensureServiceAuth(ctx);
+            return ctx.pubSub.subscribe(CHAT_TOPIC) as AsyncIterable<ChatRecord>;
+          },
+          resolve: (payload: ChatRecord) => payload
         }
       }
     }
   };
 }
 
-function ensureAccess(accessCode: string, env: Env): void {
-  if (accessCode !== env.CHAT_PASSWORD) {
-    throw new Error('Access denied');
+function ensureVisitorAccess(accessCode: string | null | undefined, ctx: YogaContext): void {
+  if (accessCode && accessCode === ctx.env.CHAT_PASSWORD) {
+    return;
+  }
+  if (hasServiceAuth(ctx.requestHeaders, ctx.env)) {
+    return;
+  }
+  throw new Error('Access denied');
+}
+
+function ensureServiceAuth(ctx: YogaContext): void {
+  if (!hasServiceAuth(ctx.requestHeaders, ctx.env)) {
+    throw new Error('Unauthorized');
   }
 }
 
-function ensureServiceToken(headers: Headers, env: Env): void {
+function hasServiceAuth(headers: Headers, env: Env): boolean {
   const token = headers.get('x-service-token');
-  if (!token || token !== env.SERVICE_TOKEN) {
-    throw new Error('Unauthorized');
-  }
+  return Boolean(token && token === env.SERVICE_TOKEN);
 }
 
 async function* filterMessages(iterator: AsyncIterable<MessageRecord>, chatId: string) {

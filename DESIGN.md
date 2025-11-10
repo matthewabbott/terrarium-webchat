@@ -31,7 +31,7 @@ Visitor Browser (mbabbott.com) ↔ GraphQL relay on VPS (dice-roller extension)
 - Commands:
   - `createChat(accessCode, mode)` mutation before first message.
   - `sendMessage(chatId, user: "Visitor", content, accessCode)` for each outbound text chunk.
-  - Subscribe to `messageStream(chatId)` to receive Terra responses and system notices.
+- Subscribe to `messageStream(chatId)` to receive Terra responses and system notices.
 - BYO mode: collect provider/API key/model, send once via `initExternalChat`, then keep messages client-side until server acks.
 
 ### 2. GraphQL Relay (VPS / `packages/vps-server`)
@@ -39,14 +39,14 @@ Visitor Browser (mbabbott.com) ↔ GraphQL relay on VPS (dice-roller extension)
   - `Chat { id, mode, createdAt, status }`
   - `Message { id, chatId, sender, content, createdAt }`
 - Mutations: `createChat(accessCode, mode)`, `sendVisitorMessage(chatId, content, accessCode)`, `postAgentMessage(chatId, content, serviceToken)`, `initExternalChat`, `sendExternalMessage`.
-- Subscription: `messageStream(chatId)` publishing appended messages.
+- Subscription: `messageStream(chatId)` publishing appended messages plus `chatOpened` for the worker to detect new sessions.
 - Persistence: lightweight Postgres/SQLite or in-memory store with TTL, since chat volume is low; logs can flush to disk for audits.
 - Security: validate access code, rate-limit per IP, verify `serviceToken` for Terra worker, encrypt BYO API keys at rest (in-memory + sealed box) and purge on chat end.
 - Integration detail: the new Yoga module is exported from `packages/vps-server/src/chatModule.ts`, so dice-roller can import `buildChatModule()` and merge the typeDefs/resolvers directly without copy/pasting SDL.
 
 ### 3. Terrarium Worker (`packages/terrarium-client`)
 - Language flexible (Python fits existing tooling). Responsibilities:
-  1. Authenticate to GraphQL relay and subscribe to Terra-mode chats needing responses.
+  1. Authenticate to GraphQL relay and subscribe/poll Terra-mode chats needing responses.
   2. Mirror terrarium-irc’s `ContextManager`: maintain per-chat memory, detect staleness, and trim tokens.
   3. Build OpenAI-format payloads for terrarium-agent: include system prompt referencing website info, the last N conversation turns, plus synthetic “web context” tool output.
   4. Handle tool calls returned by terrarium-agent (same JSON schema as in terrarium-irc). Implement executors for:
