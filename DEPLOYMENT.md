@@ -33,20 +33,24 @@ Outputs:
    npm install --omit=dev
    sudo chown -R www-data:www-data node_modules package-lock.json
    ```
-4. **Environment** – copy `.env.example` (`packages/vps-server/.env.example`) to `/var/www/html/terrarium-server/.env` and fill in:
-   - `CHAT_PASSWORD` – visitor access code
-   - `SERVICE_TOKEN` – shared secret with the worker
-   - `PORT` – default `4000`, or change if dice-roller already owns it
+4. **Environment** – copy `.env.example` (`packages/vps-server/.env.example`) to `/var/www/html/terrarium-server/.env` and fill in (example values shown):
+   ```ini
+   CHAT_PASSWORD=terra-access                # visitor access code
+   SERVICE_TOKEN=super-secret-service-token  # shared secret with the worker
+   PORT=4100                                 # relay port (match nginx proxy)
+   LOG_LEVEL=info
+   CHAT_TTL_HOURS=6
+   ```
 5. **PM2 service**:
    ```bash
    cd /var/www/html/terrarium-server
-   pm2 start dist/server.js --name terrarium-chat --env .env
+   pm2 start dist/server.js --name terrarium-chat --cwd /var/www/html/terrarium-server
    pm2 save
    ```
-6. **nginx route** – add to `/etc/nginx/sites-available/default`:
+6. **nginx route** – add to `/etc/nginx/sites-available/default` (update the port if you chose something other than 4100):
    ```nginx
    location /terrarium/graphql {
-       proxy_pass http://localhost:4000/graphql;
+       proxy_pass http://localhost:4100/graphql;
        proxy_set_header Upgrade $http_upgrade;
        proxy_set_header Connection "upgrade";
        proxy_set_header Host $host;
@@ -104,3 +108,8 @@ The worker polls `_health`, `openChats`, and `messages`, then posts replies via 
 - Worker console logs confirm it connects and responds.
 
 Once everything is green, snapshot both `/var/www/html/terrarium-server` and `~/mbabbott-webpage` so redeploys stay reproducible.
+
+## 6. Rotating credentials
+
+- **Visitor access code (`CHAT_PASSWORD`)** – edit `/var/www/html/terrarium-server/.env`, then `pm2 restart terrarium-chat` so the relay enforces the new code. Share it only with trusted users.
+- **Service token (`SERVICE_TOKEN`)** – update the same `.env`, restart the relay, then update `packages/terrarium-client/.env` on the LLM host to match before restarting the worker. This keeps `openChats`, `messages`, and `postAgentMessage` limited to the trusted worker.
