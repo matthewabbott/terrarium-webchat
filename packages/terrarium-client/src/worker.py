@@ -8,7 +8,7 @@ from typing import Dict, List
 
 from .agent import AgentClient
 from .context import Conversation
-from .graphql_client import GraphQLClient
+from .relay_client import RelayClient
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +17,12 @@ class TerrariumWorker:
     def __init__(
         self,
         *,
-        graphql: GraphQLClient,
+        relay: RelayClient,
         agent: AgentClient,
         poll_interval: float = 2.0,
         max_turns: int = 16,
     ) -> None:
-        self.graphql = graphql
+        self.relay = relay
         self.agent = agent
         self.poll_interval = poll_interval
         self.max_turns = max_turns
@@ -39,14 +39,14 @@ class TerrariumWorker:
             await asyncio.sleep(self.poll_interval)
 
     async def tick(self) -> None:
-        chats = await self.graphql.fetch_open_chats()
+        chats = await self.relay.fetch_open_chats()
         for chat in chats:
             chat_id = chat["id"]
             conversation = self._conversations.setdefault(chat_id, Conversation(chat_id=chat_id))
             await self._sync_chat(conversation)
 
     async def _sync_chat(self, conversation: Conversation) -> None:
-        messages = await self.graphql.fetch_messages(conversation.chat_id)
+        messages = await self.relay.fetch_messages(conversation.chat_id)
         sorted_messages = sorted(messages, key=lambda msg: msg["createdAt"])
         for message in sorted_messages:
             role = 'user' if message["sender"] == "Visitor" else 'assistant'
@@ -62,4 +62,4 @@ class TerrariumWorker:
         conversation.prune(self.max_turns)
         response = await self.agent.generate(conversation)
         conversation.add_turn("assistant", response)
-        await self.graphql.post_agent_message(conversation.chat_id, response)
+        await self.relay.post_agent_message(conversation.chat_id, response)

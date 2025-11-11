@@ -1,30 +1,35 @@
 # @terrarium/webchat-vps-server
 
-GraphQL relay that lives on the VPS. It gates visitor access, emits chat subscriptions, and accepts outbound messages from the terrarium worker. The schema is exported via `buildChatModule()` so dice-roller (or any other server) can stitch the same chat types into its existing Yoga instance.
+Lightweight Express + WebSocket relay that runs on the VPS. It gates visitor access with an access code, exposes REST endpoints for the worker, and streams chat updates over a `/api/chat` WebSocket per visitor.
+
+## Routes
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| `POST` | `/api/chat/:chatId/messages` | access code in body | Visitor sends a message. |
+| `GET` | `/api/chat/:chatId/messages` | access code or `x-service-token` | Fetch chat transcript. |
+| `GET` | `/api/chats/open` | `x-service-token` | Worker polls for chats needing attention. |
+| `POST` | `/api/chat/:chatId/agent` | `x-service-token` | Worker posts Terra’s reply. |
+| `WS` | `/api/chat?chatId=…&accessCode=…` | access code in query | Live stream of chat messages. |
 
 ## Scripts
-- `npm run dev` – start Yoga with tsx + hot reload
+- `npm run dev` – start the relay with `tsx` + hot reload
 - `npm run build` – compile to `dist/`
 - `npm run start` – run compiled server
 - `npm run lint` – type-check only
-- `npm run test` – placeholder for resolver tests
+- `npm run test` – placeholder for future route tests
 
-## Reuse in dice-roller
-Import the built module and merge it with the dice-roller schema:
-
-```ts
-import { buildChatModule } from '@terrarium/webchat-vps-server/chatModule';
-
-const chatModule = buildChatModule();
-const schema = createSchema({
-  typeDefs: [existingTypeDefs, chatModule.typeDefs],
-  resolvers: [existingResolvers, chatModule.resolvers],
-});
+## Env Vars (`.env`)
+```
+CHAT_PASSWORD=terra-access
+SERVICE_TOKEN=super-secret-service-token
+PORT=4100
 ```
 
-Provide the same context props (`store`, `env`, `pubSub`, `requestHeaders`) when wiring it into the existing Yoga instance.
+Add optional knobs like `LOG_LEVEL` or TTL settings as we grow the feature set.
 
-### Worker endpoints
-- `openChats` / `messages(chatId)` – require the `x-service-token` header; used by the terrarium worker to poll conversation state.
-- `chatOpened` subscription – emits a `Chat` whenever a visitor starts a new session (also service-token gated).
-- `postAgentMessage` – worker-only mutation for publishing Terra's replies (service token enforced).
+## Deployment Notes
+1. Build the workspace (`npm run build --workspace packages/vps-server`).
+2. Sync `dist/` + `package.json` into `/var/www/html/terrarium-server/` on the VPS.
+3. Install production dependencies there (`npm install --omit=dev`).
+4. Run via PM2 (`pm2 start dist/index.js --name terrarium-rest-chat`).
+5. Update nginx to proxy `/terrarium/chat` (HTTP + WebSocket) to the relay port.

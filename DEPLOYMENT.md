@@ -1,6 +1,6 @@
 # Deployment Playbook
 
-This guide explains how to run the terrarium webchat stack across the VPS (GraphQL relay + website assets) and the local LLM host (outbound worker). It mirrors the existing dice-roller deployment flow so you can reuse PM2, nginx, and `/var/www/html` conventions.
+This guide explains how to run the terrarium webchat stack across the VPS (REST relay + website assets) and the local LLM host (outbound worker). It mirrors the existing dice-roller deployment flow so you can reuse PM2, nginx, and `/var/www/html` conventions.
 
 ## 1. Build artifacts on the VPS
 
@@ -15,7 +15,7 @@ Outputs:
 - `packages/vps-server/dist/` → Node server bundle to run under PM2
 - `packages/web-frontend/dist/` → static assets to copy into the mbabbott.com site
 
-## 2. Deploy the GraphQL relay
+## 2. Deploy the REST relay
 
 1. **Staging directory** – create a sibling of the dice server so permissions stay consistent:
    ```bash
@@ -25,32 +25,38 @@ Outputs:
 2. **Copy build + package files**:
    ```bash
    rsync -av --delete packages/vps-server/dist/ /var/www/html/terrarium-server/dist/
-   rsync -av packages/vps-server/package.json /var/www/html/terrarium-server/
+   rsync -av packages/vps-server/package*.json /var/www/html/terrarium-server/
    ```
 3. **Install prod deps** (within `/var/www/html/terrarium-server`):
    ```bash
    cd /var/www/html/terrarium-server
    npm install --omit=dev
-   sudo chown -R www-data:www-data node_modules package-lock.json
    ```
 4. **Environment** – copy `.env.example` (`packages/vps-server/.env.example`) to `/var/www/html/terrarium-server/.env` and fill in (example values shown):
    ```ini
    CHAT_PASSWORD=terra-access                # visitor access code
    SERVICE_TOKEN=super-secret-service-token  # shared secret with the worker
    PORT=4100                                 # relay port (match nginx proxy)
-   LOG_LEVEL=info
-   CHAT_TTL_HOURS=6
    ```
 5. **PM2 service**:
    ```bash
    cd /var/www/html/terrarium-server
-   pm2 start dist/server.js --name terrarium-chat --cwd /var/www/html/terrarium-server
+   pm2 start dist/index.js --name terrarium-rest-chat --cwd /var/www/html/terrarium-server
    pm2 save
    ```
-6. **nginx route** – add to `/etc/nginx/sites-available/default` (update the port if you chose something other than 4100):
+6. **nginx routes** – add to `/etc/nginx/sites-available/default` (update port if you chose something else):
    ```nginx
-   location /terrarium/graphql {
-       proxy_pass http://localhost:4100/graphql;
+   # REST endpoints
+   location /terrarium/api/ {
+       proxy_pass http://127.0.0.1:4100/api/;
+       proxy_set_header Host $host;
+       proxy_set_header X-Real-IP $remote_addr;
+   }
+
+   # WebSocket stream
+   location /terrarium/api/chat {
+       proxy_pass http://127.0.0.1:4100/api/chat;
+       proxy_http_version 1.1;
        proxy_set_header Upgrade $http_upgrade;
        proxy_set_header Connection "upgrade";
        proxy_set_header Host $host;
@@ -58,23 +64,26 @@ Outputs:
    ```
    Reload nginx: `sudo systemctl reload nginx`.
 
-> If you prefer to reuse the existing dice Yoga instance, import `buildChatModule` from `packages/vps-server/dist/chatModule.js` inside `dice-roller/server.ts`, merge its schema, and keep PM2 pointed at `dice-server`. The remainder of this guide still applies because the public endpoint stays `/terrarium/graphql`.
+With this config the public base URL becomes `https://mbabbott.com/terrarium`, so the frontend can call `https://mbabbott.com/terrarium/api/...` and open `wss://mbabbott.com/terrarium/api/chat`.
 
-## 3. Deploy the chat widget to mbabbott.com
+## 3. Deploy the chat page to mbabbott.com
 
 1. Copy the Vite build into the site mirror:
    ```bash
-   rsync -av --delete packages/web-frontend/dist/ ~/mbabbott-webpage/var/www/html/terrarium-chat/
+   rsync -av --delete packages/web-frontend/dist/ ~/mbabbott-webpage/var/www/html/terra/
    ```
-2. Reference the bundle from your homepage (e.g., add `<script type="module" src="/terrarium-chat/assets/index.js"></script>` and a div to mount the widget). The UI reads these env vars at build time:
-   - `VITE_GRAPHQL_URL=https://mbabbott.com/terrarium/graphql`
-   - `VITE_GRAPHQL_WS_URL=wss://mbabbott.com/terrarium/graphql`
-   Define them in `packages/web-frontend/.env` before running the build.
+2. `packages/web-frontend/.env` controls build-time URLs:
+   ```ini
+   VITE_API_BASE=https://mbabbott.com/terrarium
+   VITE_WS_BASE=wss://mbabbott.com/terrarium
+   ```
+   The runtime code appends `/api/...` or `/api/chat` automatically.
 3. Deploy to nginx root:
    ```bash
    sudo cp -r ~/mbabbott-webpage/var/www/html/* /var/www/html/
    sudo chown -R www-data:www-data /var/www/html/
    ```
+4. Visit `https://mbabbott.com/terra/` to confirm the UI renders, prompts for the access code, and shows the “Terra is listening” status when a worker is online.
 
 ## 4. Local LLM host (terrarium worker)
 
@@ -87,29 +96,28 @@ poetry install
 ```
 
 `.env` values:
-- `GRAPHQL_URL=https://mbabbott.com/terrarium/graphql`
+- `API_BASE_URL=https://mbabbott.com/terrarium`
 - `SERVICE_TOKEN=<matches VPS .env>`
 - `AGENT_API_URL=http://127.0.0.1:8080/v1/chat/completions` (or your terrarium-agent URL)
 - Optional `AGENT_MODEL`, `POLL_INTERVAL_SECONDS`
 
-Run the worker (consider wrapping with systemd/pm2):
+Run the worker (wrap in systemd, pm2, or tmux for production):
 
 ```bash
 poetry run python -m src.main
 ```
 
-The worker polls `_health`, `openChats`, and `messages`, then posts replies via `postAgentMessage`. Keep outbound HTTPS open to the VPS; no inbound ports are required.
+The worker polls `/api/chats/open`, fetches messages per chat, calls terrarium-agent, and posts replies via `/api/chat/:chatId/agent`. Keep outbound HTTPS open to the VPS; no inbound ports are required.
 
 ## 5. Verification checklist
 
-- `curl https://mbabbott.com/terrarium/graphql -d '{"query":"{_health}"}'` returns `{"data":{"_health":"ok"}}`.
-- Vite widget loads on mbabbott.com and prompts for the access code.
-- `pm2 logs terrarium-chat` shows visitor messages arriving.
-- Worker console logs confirm it connects and responds.
-
-Once everything is green, snapshot both `/var/www/html/terrarium-server` and `~/mbabbott-webpage` so redeploys stay reproducible.
+- `curl https://mbabbott.com/terrarium/api/chats/open -H 'x-service-token: …'` returns a JSON list (empty when idle).
+- `wscat -c wss://mbabbott.com/terrarium/api/chat?chatId=<id>&accessCode=terra-access` streams messages.
+- Vite widget loads on mbabbott.com/terra, accepts the access code, and shows new messages.
+- `pm2 logs terrarium-rest-chat` shows visitor messages arriving, plus worker POSTs.
+- Worker console logs confirm it connects and responds without authorization errors.
 
 ## 6. Rotating credentials
 
-- **Visitor access code (`CHAT_PASSWORD`)** – edit `/var/www/html/terrarium-server/.env`, then `pm2 restart terrarium-chat` so the relay enforces the new code. Share it only with trusted users.
-- **Service token (`SERVICE_TOKEN`)** – update the same `.env`, restart the relay, then update `packages/terrarium-client/.env` on the LLM host to match before restarting the worker. This keeps `openChats`, `messages`, and `postAgentMessage` limited to the trusted worker.
+- **Visitor access code (`CHAT_PASSWORD`)** – edit `/var/www/html/terrarium-server/.env`, then `pm2 restart terrarium-rest-chat` so the relay enforces the new code. Share it only with trusted users.
+- **Service token (`SERVICE_TOKEN`)** – update the same `.env`, restart the relay, then update `packages/terrarium-client/.env` on the LLM host to match before restarting the worker. This keeps `/api/chats/open`, `/api/chat/:chatId/agent`, and history endpoints limited to the trusted worker.

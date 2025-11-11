@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from rich.console import Console
 
 from .agent import AgentClient
-from .graphql_client import GraphQLClient
+from .relay_client import RelayClient
 from .worker import TerrariumWorker
 
 console = Console()
@@ -19,7 +19,7 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
 
 @dataclass
 class Settings:
-    graphql_url: str
+    api_base_url: str
     service_token: str
     agent_api_url: str
     agent_model: str
@@ -27,18 +27,18 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    graphql_url = os.environ.get("GRAPHQL_URL")
+    api_base_url = os.environ.get("API_BASE_URL")
     service_token = os.environ.get("SERVICE_TOKEN")
     agent_api_url = os.environ.get("AGENT_API_URL")
     agent_model = os.environ.get("AGENT_MODEL", "terra-webchat")
     poll_interval = float(os.environ.get("POLL_INTERVAL_SECONDS", "2"))
 
-    missing = [name for name, value in {"GRAPHQL_URL": graphql_url, "SERVICE_TOKEN": service_token, "AGENT_API_URL": agent_api_url}.items() if not value]
+    missing = [name for name, value in {"API_BASE_URL": api_base_url, "SERVICE_TOKEN": service_token, "AGENT_API_URL": agent_api_url}.items() if not value]
     if missing:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
     return Settings(
-        graphql_url=graphql_url,
+        api_base_url=api_base_url,
         service_token=service_token,
         agent_api_url=agent_api_url,
         agent_model=agent_model,
@@ -48,12 +48,12 @@ def load_settings() -> Settings:
 
 async def main() -> None:
     settings = load_settings()
-    console.print(f"[bold cyan]Terrarium webchat worker[/] connected to {settings.graphql_url}")
+    console.print(f"[bold cyan]Terrarium webchat worker[/] connected to {settings.api_base_url}")
 
-    async with GraphQLClient(graphql_url=settings.graphql_url, service_token=settings.service_token) as graphql_client:
-        await graphql_client.ping()
+    async with RelayClient(api_base_url=settings.api_base_url, service_token=settings.service_token) as relay_client:
+        await relay_client.ping()
         agent_client = AgentClient(api_url=settings.agent_api_url, model=settings.agent_model)
-        worker = TerrariumWorker(graphql=graphql_client, agent=agent_client, poll_interval=settings.poll_interval)
+        worker = TerrariumWorker(relay=relay_client, agent=agent_client, poll_interval=settings.poll_interval)
 
         try:
             await worker.run_forever()

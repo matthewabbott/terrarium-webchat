@@ -1,48 +1,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { gql, useMutation, useSubscription } from '@apollo/client';
-
-const CREATE_CHAT = gql`
-  mutation CreateChat($accessCode: String!, $mode: ChatMode!) {
-    createChat(accessCode: $accessCode, mode: $mode) {
-      id
-      mode
-      status
-      createdAt
-      updatedAt
-    }
-  }
-`;
-
-const SEND_VISITOR_MESSAGE = gql`
-  mutation SendVisitorMessage($chatId: ID!, $content: String!, $accessCode: String!) {
-    sendVisitorMessage(chatId: $chatId, content: $content, accessCode: $accessCode) {
-      id
-      chatId
-      sender
-      content
-      createdAt
-    }
-  }
-`;
-
-const MESSAGE_STREAM = gql`
-  subscription MessageStream($chatId: ID!, $accessCode: String!) {
-    messageStream(chatId: $chatId, accessCode: $accessCode) {
-      id
-      chatId
-      sender
-      content
-      createdAt
-    }
-  }
-`;
 
 type Chat = {
   id: string;
-  mode: 'terra' | 'external';
-  status: 'open' | 'closed' | 'error';
-  createdAt: string;
-  updatedAt: string;
 };
 
 type Message = {
@@ -58,29 +17,45 @@ const formatter = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit'
 });
 
+const defaultHttpBase = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173';
+const API_BASE = import.meta.env.VITE_API_BASE ?? defaultHttpBase;
+const WS_BASE = import.meta.env.VITE_WS_BASE ?? API_BASE.replace(/^http/, 'ws');
+
+function buildUrl(path: string): string {
+  return new URL(path, API_BASE).toString();
+}
+
+function buildWsUrl(path: string, params: Record<string, string>): string {
+  const url = new URL(path, WS_BASE);
+  Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
+  return url.toString();
+}
+
+function generateChatId(): string {
+  if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).slice(2, 12);
+}
+
 export function App() {
   const [accessCode, setAccessCode] = useState(() => sessionStorage.getItem('terrarium-access-code') ?? '');
-  const [chat, setChat] = useState<Chat | null>(null);
+  const [chat, setChat] = useState<Chat | null>(() => {
+    const stored = sessionStorage.getItem('terrarium-chat-id');
+    return stored ? { id: stored } : null;
+  });
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [terraConnected, setTerraConnected] = useState(false);
   const [awaitingTerra, setAwaitingTerra] = useState(false);
   const [lastAckAt, setLastAckAt] = useState<Date | null>(null);
+  const [socketStatus, setSocketStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
 
   const messageIds = useRef<Set<string>>(new Set());
   const messageContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-
-  const [createChatMutation, { loading: creating }] = useMutation(CREATE_CHAT);
-  const [sendMessageMutation, { loading: sending }] = useMutation(SEND_VISITOR_MESSAGE);
-
-  const subscriptionEnabled = Boolean(chat && accessCode.trim());
-
-  const { data: subscriptionData } = useSubscription(MESSAGE_STREAM, {
-    variables: { chatId: chat?.id ?? '', accessCode },
-    skip: !subscriptionEnabled
-  });
+  const wsRef = useRef<WebSocket | null>(null);
 
   const handleAddMessage = useCallback((msg: Message) => {
     setMessages((prev) => {
@@ -92,11 +67,18 @@ export function App() {
     });
   }, []);
 
-  useEffect(() => {
-    if (subscriptionData?.messageStream) {
-      handleAddMessage(subscriptionData.messageStream);
+  const resetChat = useCallback(() => {
+    setChat(null);
+    setMessages([]);
+    messageIds.current.clear();
+    setTerraConnected(false);
+    setAwaitingTerra(false);
+    setLastAckAt(null);
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
     }
-  }, [subscriptionData, handleAddMessage]);
+  }, []);
 
   useEffect(() => {
     if (!terraConnected && messages.some((msg) => msg.sender === 'Terra')) {
@@ -111,51 +93,68 @@ export function App() {
     sessionStorage.setItem('terrarium-access-code', accessCode);
   }, [accessCode]);
 
-  const resetChat = () => {
-    setChat(null);
-    setMessages([]);
-    messageIds.current.clear();
-  };
-
-  const handleCreateChat = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!accessCode.trim()) {
-      setFormError('Access code required');
-      return;
+  useEffect(() => {
+    if (chat?.id) {
+      sessionStorage.setItem('terrarium-chat-id', chat.id);
+    } else {
+      sessionStorage.removeItem('terrarium-chat-id');
     }
-    setFormError(null);
+  }, [chat]);
+
+  const fetchHistory = useCallback(async () => {
+    if (!chat?.id || !accessCode.trim()) return;
     try {
-      const result = await createChatMutation({
-        variables: { accessCode, mode: 'terra' }
-      });
-      if (result.data?.createChat) {
-        resetChat();
-        setChat(result.data.createChat);
+      const historyUrl = new URL(`/api/chat/${chat.id}/messages`, API_BASE);
+      historyUrl.searchParams.set('accessCode', accessCode);
+      const response = await fetch(historyUrl.toString());
+      if (!response.ok) throw new Error('Unable to load history');
+      const data: Message[] = await response.json();
+      messageIds.current = new Set(data.map((msg) => msg.id));
+      setMessages(data);
+      if (data.some((msg) => msg.sender === 'Terra')) {
+        setTerraConnected(true);
       }
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Unknown error');
+      setFormError(error instanceof Error ? error.message : 'Unable to load history');
     }
-  };
+  }, [chat, accessCode]);
 
-  const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!chat || !messageInput.trim()) {
+  useEffect(() => {
+    fetchHistory();
+  }, [fetchHistory]);
+
+  useEffect(() => {
+    if (!chat?.id || !accessCode.trim()) {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      setSocketStatus('idle');
       return;
     }
-    try {
-      const result = await sendMessageMutation({
-        variables: { chatId: chat.id, content: messageInput.trim(), accessCode }
-      });
-      if (result.data?.sendVisitorMessage) {
-        handleAddMessage(result.data.sendVisitorMessage);
-        setMessageInput('');
-        setAwaitingTerra(true);
-        setLastAckAt(new Date(result.data.sendVisitorMessage.createdAt));
+
+    const wsUrl = buildWsUrl('/api/chat', { chatId: chat.id, accessCode });
+    const socket = new WebSocket(wsUrl);
+    wsRef.current = socket;
+    setSocketStatus('connecting');
+
+    socket.onopen = () => setSocketStatus('connected');
+    socket.onerror = () => setSocketStatus('error');
+    socket.onclose = () => setSocketStatus('idle');
+    socket.onmessage = (event) => {
+      try {
+        const payload: Message = JSON.parse(event.data as string);
+        handleAddMessage(payload);
+      } catch (error) {
+        console.error('Invalid message payload', error);
       }
-    } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Unable to send message');
-    }
-  };
+    };
+
+    return () => {
+      socket.close();
+      wsRef.current = null;
+    };
+  }, [chat, accessCode, handleAddMessage]);
 
   useEffect(() => {
     if (!messageContainerRef.current) return;
@@ -171,6 +170,46 @@ export function App() {
   useEffect(() => {
     autoResizeTextarea();
   }, [messageInput, autoResizeTextarea]);
+
+  const handleCreateChat = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!accessCode.trim()) {
+      setFormError('Access code required');
+      return;
+    }
+    setFormError(null);
+    setMessages([]);
+    messageIds.current.clear();
+    setTerraConnected(false);
+    setAwaitingTerra(false);
+    setChat({ id: generateChatId() });
+  };
+
+  const handleSendMessage = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!chat || !messageInput.trim()) {
+      return;
+    }
+    try {
+      const response = await fetch(buildUrl(`/api/chat/${chat.id}/messages`), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ content: messageInput.trim(), accessCode })
+      });
+      if (!response.ok) {
+        throw new Error('Unable to send message');
+      }
+      const message: Message = await response.json();
+      handleAddMessage(message);
+      setMessageInput('');
+      setAwaitingTerra(true);
+      setLastAckAt(new Date(message.createdAt));
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Unable to send message');
+    }
+  };
 
   const messageList = useMemo(() => {
     if (!messages.length) {
@@ -201,37 +240,47 @@ export function App() {
       <header className="hero">
         <div>
           <p className="eyebrow">mbabbott.com / Terra</p>
-          <h1>Ask Terra anything.</h1>
+          <h1>Converse inside the terrarium.</h1>
           <p className="subheading">
-            Terra is Matthew&apos;s website concierge. Enter your access code to start a private chat.
+            Terra lives on my DGX “spark” cluster—an overgrown digital garden of projects, experiments, and ideas.
+            Bring your access code, open a chat, and let Terra guide you through mbabbott.com.
           </p>
+          <p className="coming-soon">Learn more about Terra + spark (coming soon)</p>
         </div>
         <div className={`status-dot ${terraConnected ? 'status-dot--online' : 'status-dot--offline'}`}>
-          {terraConnected ? 'Online' : 'Waiting'}
+          {terraConnected ? 'Terra is listening' : 'Waiting for Terra'}
         </div>
       </header>
 
-      {!chat && (
-        <section className="access-panel">
-          <form className="access-form" onSubmit={handleCreateChat}>
-            <label>
-              Access code
-              <input value={accessCode} onChange={(event) => setAccessCode(event.target.value)} placeholder="••••••" />
-            </label>
-            <button type="submit" disabled={creating || !accessCode.trim()}>
-              {creating ? 'Opening…' : 'Start chat'}
-            </button>
-          </form>
-          {formError && <p className="error">{formError}</p>}
-        </section>
-      )}
+      <section className="terrarium-intro">
+        <h2>What is Terra?</h2>
+        <p>
+          Terra is a resident of my digital terrarium—a living archive of research notes, prototypes, and personal work
+          hosted on the NVIDIA DGX spark. The system is intentionally overgrown: mossy control panels, ivy-patterned UI
+          textures, and little nods to the physical terrariums that inspired it. This page is how you visit.
+        </p>
+      </section>
+
+      <section className="access-panel">
+        <form className="access-form" onSubmit={handleCreateChat}>
+          <label>
+            Access code
+            <input value={accessCode} onChange={(event) => setAccessCode(event.target.value)} placeholder="••••••" />
+          </label>
+          <button type="submit" disabled={!accessCode.trim()}>
+            {chat ? 'Start a new chat' : 'Enter the terrarium'}
+          </button>
+        </form>
+        {formError && <p className="error">{formError}</p>}
+      </section>
 
       <section className="chat-panel">
-        {!chat && <div className="chat-placeholder">Start a chat to unlock Terra&apos;s responses.</div>}
+        {!chat && <div className="chat-placeholder">Enter your access code to open a chat with Terra.</div>}
         {chat && (
           <>
             <div className="chat-meta">
               <span>Chat ID: {chat.id.slice(0, 8)}</span>
+              <span className={`socket-indicator socket-indicator--${socketStatus}`}>{socketStatus}</span>
               <button className="reset-btn" type="button" onClick={resetChat}>
                 Reset chat
               </button>
@@ -254,18 +303,18 @@ export function App() {
                 ref={textareaRef}
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
-                placeholder="Type a message…"
+                placeholder={terraConnected ? 'Tell Terra what you need…' : 'Waiting for Terra to connect…'}
                 disabled={!chat}
                 rows={1}
                 onInput={autoResizeTextarea}
               />
-              <button type="submit" disabled={!chat || sending || !messageInput.trim()}>
-                {sending ? 'Sending…' : 'Send'}
+              <button type="submit" disabled={!chat || !messageInput.trim()}>
+                Send
               </button>
             </form>
             <div className="status-row">
               {ackLabel && <span>{ackLabel}</span>}
-              {!terraConnected && <span>Terra will answer when the worker connects.</span>}
+              {!terraConnected && <span>Messages queue here until Terra reconnects.</span>}
             </div>
           </>
         )}
