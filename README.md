@@ -18,4 +18,4 @@ Web chat harness for Terra (GLM-4.5 running in `terrarium-agent`). The goal is t
 └── tsconfig.base.json
 ```
 
-See `DESIGN.md` for the detailed architecture plan and prioritized backlog, and `DEPLOYMENT.md` for VPS + worker setup steps.
+See `DESIGN.md` for the detailed architecture plan and prioritized backlog, and `DEPLOYMENT.md` for VPS + worker setup steps. The relay exposes its REST + WebSocket API under `/api/*` by default; set `BASE_PATH=/terrarium` (or similar) if you need the routes namespaced behind your main site.

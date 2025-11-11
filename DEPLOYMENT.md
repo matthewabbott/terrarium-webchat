@@ -37,6 +37,7 @@ Outputs:
    CHAT_PASSWORD=terra-access                # visitor access code
    SERVICE_TOKEN=super-secret-service-token  # shared secret with the worker
    PORT=4100                                 # relay port (match nginx proxy)
+   BASE_PATH=/terrarium                      # mount REST + WS under /terrarium/api
    ```
 5. **PM2 service**:
    ```bash

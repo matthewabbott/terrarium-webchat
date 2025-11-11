@@ -23,9 +23,10 @@ Lightweight Express + WebSocket relay that runs on the VPS. It gates visitor acc
 CHAT_PASSWORD=terra-access
 SERVICE_TOKEN=super-secret-service-token
 PORT=4100
+BASE_PATH=/terrarium   # optional; defaults to empty so routes live at /api
 ```
 
-Add optional knobs like `LOG_LEVEL` or TTL settings as we grow the feature set.
+When `BASE_PATH` is set, HTTP routes live at `<BASE_PATH>/api/*` and the WebSocket listens at `<BASE_PATH>/api/chat`. Leave it empty for local dev.
 
 ## Deployment Notes
 1. Build the workspace (`npm run build --workspace packages/vps-server`).

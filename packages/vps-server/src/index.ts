@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 const CHAT_PASSWORD = process.env.CHAT_PASSWORD ?? 'terra-access';
 const SERVICE_TOKEN = process.env.SERVICE_TOKEN ?? 'super-secret-service-token';
 const PORT = Number(process.env.PORT ?? 4100);
+const BASE_PATH = (process.env.BASE_PATH ?? '').replace(/\/$/, '');
 
 interface Message {
   id: string;
@@ -21,6 +22,8 @@ const connections = new Map<string, Set<WebSocket>>();
 
 const app = express();
 app.use(express.json());
+
+const apiRouter = express.Router();
 
 function ensureChat(chatId: string): Message[] {
   if (!chats.has(chatId)) {
@@ -39,7 +42,7 @@ function broadcast(chatId: string, message: Message) {
   }
 }
 
-app.post('/api/chat/:chatId/messages', (req: Request, res: Response) => {
+apiRouter.post('/chat/:chatId/messages', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const { content, accessCode } = req.body as { content?: string; accessCode?: string };
   if (accessCode !== CHAT_PASSWORD) {
@@ -61,7 +64,7 @@ app.post('/api/chat/:chatId/messages', (req: Request, res: Response) => {
   res.json(message);
 });
 
-app.get('/api/chat/:chatId/messages', (req: Request, res: Response) => {
+apiRouter.get('/chat/:chatId/messages', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const accessCode = (req.query.accessCode as string | undefined) ?? undefined;
   const token = req.headers['x-service-token'];
@@ -71,7 +74,7 @@ app.get('/api/chat/:chatId/messages', (req: Request, res: Response) => {
   res.json(ensureChat(chatId));
 });
 
-app.post('/api/chat/:chatId/agent', (req: Request, res: Response) => {
+apiRouter.post('/chat/:chatId/agent', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const token = req.headers['x-service-token'];
   if (token !== SERVICE_TOKEN) {
@@ -93,7 +96,7 @@ app.post('/api/chat/:chatId/agent', (req: Request, res: Response) => {
   res.json(message);
 });
 
-app.get('/api/chats/open', (req: Request, res: Response) => {
+apiRouter.get('/chats/open', (req: Request, res: Response) => {
   const token = req.headers['x-service-token'];
   if (token !== SERVICE_TOKEN) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -101,8 +104,29 @@ app.get('/api/chats/open', (req: Request, res: Response) => {
   res.json({ chatIds: Array.from(chats.keys()) });
 });
 
+const mountPoints = new Set<string>([BASE_PATH ? `${BASE_PATH}/api` : '/api']);
+for (const mount of mountPoints) {
+  app.use(mount, apiRouter);
+}
+
 const server = createServer(app);
-const wsServer = new WebSocketServer({ server, path: '/api/chat' });
+const wsServer = new WebSocketServer({ noServer: true });
+const wsPaths = new Set<string>(Array.from(mountPoints, (mount) => `${mount}/chat`));
+
+server.on('upgrade', (request, socket, head) => {
+  try {
+    const { pathname } = new URL(request.url ?? '', 'http://localhost');
+    if (!wsPaths.has(pathname ?? '')) {
+      socket.destroy();
+      return;
+    }
+    wsServer.handleUpgrade(request, socket, head, (ws) => {
+      wsServer.emit('connection', ws, request);
+    });
+  } catch {
+    socket.destroy();
+  }
+});
 
 wsServer.on('connection', (socket, request) => {
   const url = new URL(request.url ?? '', 'http://localhost');
