@@ -20,6 +20,20 @@ body {
     linear-gradient(135deg, #030805 0%, #050c07 100%);
 }
 
+a {
+  color: #7bc7ff;
+  text-decoration: underline;
+  transition: color 120ms ease;
+}
+
+a:hover {
+  color: #b5e0ff;
+}
+
+a:visited {
+  color: #d6b4ff;
+}
+
 .page {
   width: 100%;
   max-width: 1024px;
