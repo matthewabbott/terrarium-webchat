@@ -1,0 +1,17 @@
+[Unit]
+Description=Terrarium Webchat Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/terrarium-webchat/packages/terrarium-client
+Environment="PYENV=/path/to/.venvs/poetry"
+EnvironmentFile=/path/to/terrarium-webchat/packages/terrarium-client/.env
+ExecStart=/bin/bash -lc 'source ${PYENV}/bin/activate && poetry run python -m src.main'
+Restart=on-failure
+RestartSec=5s
+User=consulear
+
+[Install]
+WantedBy=multi-user.target
