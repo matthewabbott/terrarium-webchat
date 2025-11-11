@@ -17,16 +17,27 @@ const formatter = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit'
 });
 
-const defaultHttpBase = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173';
-const API_BASE = import.meta.env.VITE_API_BASE ?? defaultHttpBase;
-const WS_BASE = import.meta.env.VITE_WS_BASE ?? API_BASE.replace(/^http/, 'ws');
+const defaultHttpBase =
+  typeof window !== 'undefined'
+    ? new URL(import.meta.env.BASE_URL ?? '/', window.location.origin).toString()
+    : 'http://localhost:5173/';
+
+function ensureTrailingSlash(url: string): string {
+  return url.endsWith('/') ? url : `${url}/`;
+}
+
+const API_BASE = ensureTrailingSlash(import.meta.env.VITE_API_BASE ?? defaultHttpBase);
+const defaultWsBase = ensureTrailingSlash(API_BASE.replace(/^http/, 'ws'));
+const WS_BASE = ensureTrailingSlash(import.meta.env.VITE_WS_BASE ?? defaultWsBase);
 
 function buildUrl(path: string): string {
-  return new URL(path, API_BASE).toString();
+  const normalized = path.startsWith('/') ? path.slice(1) : path;
+  return new URL(normalized, API_BASE).toString();
 }
 
 function buildWsUrl(path: string, params: Record<string, string>): string {
-  const url = new URL(path, WS_BASE);
+  const normalized = path.startsWith('/') ? path.slice(1) : path;
+  const url = new URL(normalized, WS_BASE);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
   return url.toString();
 }

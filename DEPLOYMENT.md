@@ -76,10 +76,10 @@ With this config the public base URL becomes `https://mbabbott.com/terrarium`, s
 2. `packages/web-frontend/.env.production` (checked in) pins prod settings:
    ```ini
    VITE_BASE_PATH=/terra/
-   VITE_API_BASE=https://mbabbott.com/terrarium
-   VITE_WS_BASE=wss://mbabbott.com/terrarium
+   VITE_API_BASE=https://mbabbott.com/terrarium/
+   VITE_WS_BASE=wss://mbabbott.com/terrarium/
    ```
-   Adjust if you deploy to a different subdirectory. The runtime code appends `/api/...` or `/api/chat` automatically.
+   Adjust if you deploy to a different subdirectory. Keep the API/WS bases ending with `/` so the client resolves `api/...` paths under the same prefix. The runtime code appends `/api/...` or `/api/chat` automatically.
 3. Deploy to nginx root:
    ```bash
    sudo cp -r ~/mbabbott-webpage/var/www/html/* /var/www/html/
