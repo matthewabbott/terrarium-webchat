@@ -251,12 +251,37 @@ export function App() {
       <header className="hero">
         <div>
           <p className="eyebrow">mbabbott.com / Terra</p>
-          <h1>Converse inside the terrarium.</h1>
+          <h1>Terrarium webchat.</h1>
           <p className="subheading">
-            Terra lives on my DGX “spark” cluster—an overgrown digital garden of projects, experiments, and ideas.
-            Bring your access code, open a chat, and let Terra guide you through mbabbott.com.
+            I call my DGX spark host a digital 'terrarium' for a large language model, which I call 'Terra'.
+            Terra does many things, and one of those things is chat with you here to convince you I am cool.
+            If you don't know the secret password, DM me on{" "}
+            <a
+              href="https://www.linkedin.com/in/matthew-abbott-88390065/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              LinkedIn
+            </a>
+            ,{" "}
+            <a
+              href="https://twitter.com/Ttobbattam"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Twitter
+            </a>
+            , or just{" "}
+            <a
+              href="https://mbabbott.com/resume.pdf"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              email me
+            </a>
+            .
           </p>
-          <p className="coming-soon">Learn more about Terra + spark (coming soon)</p>
+          <p className="coming-soon">Coming soon: link(s) to about pages for my 'terrarium' projects.</p>
         </div>
         <div className={`status-dot ${terraConnected ? 'status-dot--online' : 'status-dot--offline'}`}>
           {terraConnected ? 'Terra is listening' : 'Waiting for Terra'}
@@ -266,9 +291,9 @@ export function App() {
       <section className="terrarium-intro">
         <h2>What is Terra?</h2>
         <p>
-          Terra is a resident of my digital terrarium—a living archive of research notes, prototypes, and personal work
-          hosted on the NVIDIA DGX spark. The system is intentionally overgrown: mossy control panels, ivy-patterned UI
-          textures, and little nods to the physical terrariums that inspired it. This page is how you visit.
+          Terra is specifically an instance of GLM-4.5-Air-AWQ-4bit.
+          Someday, Terra will have more tools she can use from this endpoint (that will let her know more about the digital 'terrarium')
+          Also a more sophisticated system prompt. And also also in my loftiest ambitions, I'll also do some fine-tuning at some point.
         </p>
       </section>
 
@@ -279,7 +304,7 @@ export function App() {
             <input value={accessCode} onChange={(event) => setAccessCode(event.target.value)} placeholder="••••••" />
           </label>
           <button type="submit" disabled={!accessCode.trim()}>
-            {chat ? 'Start a new chat' : 'Enter the terrarium'}
+            {chat ? 'Start a new chat' : 'Start a chat'}
           </button>
         </form>
         {formError && <p className="error">{formError}</p>}
