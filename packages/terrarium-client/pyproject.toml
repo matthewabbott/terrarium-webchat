@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "terrarium-webchat-client"
 version = "0.1.0"
-description = "Outbound worker that bridges GraphQL chats to terrarium-agent"
+description = "Outbound worker that bridges REST chats to terrarium-agent"
 authors = ["Matthew Abbott <hi@mbabbott.com>"]
 package-mode = false
 

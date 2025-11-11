@@ -1,6 +1,6 @@
 # @terrarium/webchat-frontend
 
-Vite + React scaffold for the mbabbott.com chat widget. It currently exposes a simple access-code form wired to the GraphQL relay. Build out the conversation view, password gating UX, and BYO-model flow here.
+Vite + React scaffold for the mbabbott.com chat widget. The UI now talks directly to the REST relay instead of the old GraphQL stack—focus new work on the access-code flow, chat interface, and BYO-model entry points.
 
 ## Scripts
 - `npm run dev` – start Vite dev server (reads `.env`)
@@ -10,11 +10,11 @@ Vite + React scaffold for the mbabbott.com chat widget. It currently exposes a s
 - `npm run test` – placeholder for component tests
 
 ## Running against the local relay
-1. Copy `.env.example` to `.env` and update `VITE_GRAPHQL_URL` / `VITE_GRAPHQL_WS_URL` if the relay isn’t on `localhost:4000`.
-2. Ensure the GraphQL relay + worker are running (see `packages/vps-server` and `packages/terrarium-client` docs).
+1. Copy `.env.example` to `.env` and tweak `VITE_API_BASE` / `VITE_WS_BASE` if the relay isn’t on `http://localhost:4000`.
+2. Ensure the REST relay + worker are running (see `packages/vps-server` and `packages/terrarium-client` docs).
 3. From repo root: `npm run dev --workspace packages/web-frontend` and open the printed URL.
-4. Enter the access code from `packages/vps-server/.env` (e.g., `letmein`), then chat normally—Terra replies stream through the `messageStream` subscription.
+4. Enter the access code from `packages/vps-server/.env` (e.g., `letmein`), then chat normally—Terra replies arrive over the `/api/chat` WebSocket.
 
 ## Next steps
-- Swap the Vite env values to the production VPS endpoint once dice-roller imports `buildChatModule()`
-- Add richer chat affordances (typing indicator, streaming UI, transcripts) after the terrarium worker can post agent messages
+- Mirror the prod VPS endpoints in `.env.example.local` so the static build can be rsynced without edits.
+- Add richer chat affordances (typing indicator, streaming UI, transcripts) once the terrarium worker can post agent messages.

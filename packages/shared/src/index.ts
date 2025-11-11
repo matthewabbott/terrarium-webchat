@@ -15,10 +15,10 @@ export interface MessagePayload {
   createdAt: string;
 }
 
-export const GRAPHQL_DEFAULT_PORT = 4000;
-export const GRAPHQL_WS_PATH = '/graphql';
+export const REST_DEFAULT_PORT = 4000;
+export const REST_API_BASE_PATH = '/api';
 
 export interface ServiceConfig {
-  graphqlUrl: string;
+  apiBaseUrl: string;
   serviceToken?: string;
 }

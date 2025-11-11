@@ -8,7 +8,14 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     base: env.VITE_BASE_PATH ?? '/',
     server: {
-      port: 5173
+      port: 5173,
+      proxy: {
+        '/api': {
+          target: env.VITE_API_PROXY ?? 'http://localhost:4000',
+          changeOrigin: true,
+          ws: true
+        }
+      }
     }
   };
 });
