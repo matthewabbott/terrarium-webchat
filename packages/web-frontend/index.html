@@ -3,9 +3,79 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Terrarium Webchat</title>
+    <title>Terra - LLM Webchat | Matthew B. Abbott</title>
+    <link href="https://fonts.googleapis.com/css2?family=Crimson+Text:ital,wght@0,400;0,700;1,400&family=Playfair+Display:wght@700&display=swap" rel="stylesheet">
   </head>
   <body>
+    <!-- Decorative Vines -->
+    <svg class="vine-decoration vine-left" viewBox="0 0 150 1000" preserveAspectRatio="xMinYMin slice">
+        <path d="M10,0 Q30,50 20,100 T40,200 T20,300 T50,400 T30,500 T60,600 T40,700 T70,800 T50,900 T80,1000"
+              stroke="#6b8e5f" stroke-width="3" fill="none" opacity="0.6"/>
+        <ellipse cx="25" cy="80" rx="15" ry="8" fill="#6b8e5f" transform="rotate(45 25 80)"/>
+        <ellipse cx="35" cy="180" rx="12" ry="7" fill="#6b8e5f" transform="rotate(-30 35 180)"/>
+        <ellipse cx="25" cy="280" rx="14" ry="9" fill="#7a9d6e" transform="rotate(60 25 280)"/>
+        <ellipse cx="45" cy="380" rx="13" ry="8" fill="#6b8e5f" transform="rotate(-45 45 380)"/>
+        <ellipse cx="35" cy="480" rx="16" ry="9" fill="#7a9d6e" transform="rotate(30 35 480)"/>
+        <ellipse cx="55" cy="580" rx="14" ry="8" fill="#6b8e5f" transform="rotate(-60 55 580)"/>
+        <ellipse cx="45" cy="680" rx="15" ry="8" fill="#7a9d6e" transform="rotate(45 45 680)"/>
+        <ellipse cx="65" cy="780" rx="12" ry="7" fill="#6b8e5f" transform="rotate(-30 65 780)"/>
+    </svg>
+
+    <svg class="vine-decoration vine-right" viewBox="0 0 150 1000" preserveAspectRatio="xMaxYMin slice">
+        <path d="M140,0 Q120,50 130,100 T110,200 T130,300 T100,400 T120,500 T90,600 T110,700 T80,800 T100,900 T70,1000"
+              stroke="#6b8e5f" stroke-width="3" fill="none" opacity="0.6"/>
+        <ellipse cx="125" cy="80" rx="15" ry="8" fill="#6b8e5f" transform="rotate(-45 125 80)"/>
+        <ellipse cx="115" cy="180" rx="12" ry="7" fill="#7a9d6e" transform="rotate(30 115 180)"/>
+        <ellipse cx="125" cy="280" rx="14" ry="9" fill="#6b8e5f" transform="rotate(-60 125 280)"/>
+        <ellipse cx="105" cy="380" rx="13" ry="8" fill="#7a9d6e" transform="rotate(45 105 380)"/>
+        <ellipse cx="115" cy="480" rx="16" ry="9" fill="#6b8e5f" transform="rotate(-30 115 480)"/>
+        <ellipse cx="95" cy="580" rx="14" ry="8" fill="#7a9d6e" transform="rotate(60 95 580)"/>
+        <ellipse cx="105" cy="680" rx="15" ry="8" fill="#6b8e5f" transform="rotate(-45 105 680)"/>
+        <ellipse cx="85" cy="780" rx="12" ry="7" fill="#7a9d6e" transform="rotate(30 85 780)"/>
+    </svg>
+
+    <svg class="vine-decoration vine-top-corner-left" viewBox="0 0 200 200">
+        <path d="M0,50 Q30,30 60,40 T120,30 T180,50"
+              stroke="#6b8e5f" stroke-width="4" fill="none" opacity="0.7"/>
+        <path d="M30,0 Q20,30 30,60 T20,120 T40,180"
+              stroke="#6b8e5f" stroke-width="3" fill="none" opacity="0.6"/>
+        <ellipse cx="50" cy="45" rx="18" ry="10" fill="#6b8e5f" transform="rotate(30 50 45)"/>
+        <ellipse cx="65" cy="35" rx="16" ry="9" fill="#7a9d6e" transform="rotate(-20 65 35)"/>
+        <ellipse cx="35" cy="55" rx="14" ry="8" fill="#5f7d53" transform="rotate(60 35 55)"/>
+    </svg>
+
+    <svg class="vine-decoration vine-top-corner-right" viewBox="0 0 200 200">
+        <path d="M200,50 Q170,30 140,40 T80,30 T20,50"
+              stroke="#6b8e5f" stroke-width="4" fill="none" opacity="0.7"/>
+        <path d="M170,0 Q180,30 170,60 T180,120 T160,180"
+              stroke="#6b8e5f" stroke-width="3" fill="none" opacity="0.6"/>
+        <ellipse cx="150" cy="45" rx="18" ry="10" fill="#6b8e5f" transform="rotate(-30 150 45)"/>
+        <ellipse cx="135" cy="35" rx="16" ry="9" fill="#7a9d6e" transform="rotate(20 135 35)"/>
+        <ellipse cx="165" cy="55" rx="14" ry="8" fill="#5f7d53" transform="rotate(-60 165 55)"/>
+    </svg>
+
+    <svg class="vine-decoration vine-bottom-corner-left" viewBox="0 0 250 250">
+        <path d="M0,200 Q40,180 80,190 T160,180 T240,210"
+              stroke="#6b8e5f" stroke-width="4" fill="none" opacity="0.7"/>
+        <path d="M40,250 Q30,210 40,170 T30,110 T50,50"
+              stroke="#6b8e5f" stroke-width="3.5" fill="none" opacity="0.65"/>
+        <ellipse cx="60" cy="195" rx="20" ry="11" fill="#6b8e5f" transform="rotate(45 60 195)"/>
+        <ellipse cx="80" cy="185" rx="18" ry="10" fill="#7a9d6e" transform="rotate(-25 80 185)"/>
+        <ellipse cx="45" cy="210" rx="16" ry="9" fill="#5f7d53" transform="rotate(70 45 210)"/>
+        <ellipse cx="70" cy="175" rx="14" ry="8" fill="#6b8e5f" transform="rotate(-40 70 175)"/>
+    </svg>
+
+    <svg class="vine-decoration vine-bottom-corner-right" viewBox="0 0 250 250">
+        <path d="M250,200 Q210,180 170,190 T90,180 T10,210"
+              stroke="#6b8e5f" stroke-width="4" fill="none" opacity="0.7"/>
+        <path d="M210,250 Q220,210 210,170 T220,110 T200,50"
+              stroke="#6b8e5f" stroke-width="3.5" fill="none" opacity="0.65"/>
+        <ellipse cx="190" cy="195" rx="20" ry="11" fill="#6b8e5f" transform="rotate(-45 190 195)"/>
+        <ellipse cx="170" cy="185" rx="18" ry="10" fill="#7a9d6e" transform="rotate(25 170 185)"/>
+        <ellipse cx="205" cy="210" rx="16" ry="9" fill="#5f7d53" transform="rotate(-70 205 210)"/>
+        <ellipse cx="180" cy="175" rx="14" ry="8" fill="#6b8e5f" transform="rotate(40 180 175)"/>
+    </svg>
+
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

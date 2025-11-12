@@ -62,6 +62,10 @@ export function App() {
   const [awaitingTerra, setAwaitingTerra] = useState(false);
   const [lastAckAt, setLastAckAt] = useState<Date | null>(null);
   const [socketStatus, setSocketStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
+  const [isDarkTheme, setIsDarkTheme] = useState(() => {
+    const stored = localStorage.getItem('terra-theme');
+    return stored === 'dark';
+  });
 
   const messageIds = useRef<Set<string>>(new Set());
   const messageContainerRef = useRef<HTMLDivElement | null>(null);
@@ -103,6 +107,15 @@ export function App() {
   useEffect(() => {
     sessionStorage.setItem('terrarium-access-code', accessCode);
   }, [accessCode]);
+
+  useEffect(() => {
+    document.body.classList.toggle('dark-theme', isDarkTheme);
+    localStorage.setItem('terra-theme', isDarkTheme ? 'dark' : 'light');
+  }, [isDarkTheme]);
+
+  const toggleTheme = useCallback(() => {
+    setIsDarkTheme((prev) => !prev);
+  }, []);
 
   useEffect(() => {
     if (chat?.id) {
@@ -247,8 +260,12 @@ export function App() {
   }, [lastAckAt]);
 
   return (
-    <div className="page">
-      <header className="hero">
+    <>
+      <button className="theme-toggle" onClick={toggleTheme} aria-label="Toggle theme">
+        {isDarkTheme ? '☀️ Light' : '🌙 Dark'}
+      </button>
+      <div className="page">
+        <header className="hero">
         <div>
           <p className="eyebrow">mbabbott.com / Terra</p>
           <h1>Terrarium webchat.</h1>
@@ -355,6 +372,7 @@ export function App() {
           </>
         )}
       </section>
-    </div>
+      </div>
+    </>
   );
 }
