@@ -136,6 +136,10 @@ body {
   box-shadow: var(--shadow-md);
 }
 
+.dark-theme .theme-toggle {
+  color: var(--text-primary);
+}
+
 a {
   color: var(--text-tertiary);
   text-decoration: underline;
@@ -569,8 +573,9 @@ button[disabled] {
   }
 
   .theme-toggle {
-    top: 1rem;
-    right: 1rem;
+    position: static;
+    margin: 0 auto 1rem;
+    display: block;
     font-size: 0.75rem;
     padding: 0.5rem 0.75rem;
   }
