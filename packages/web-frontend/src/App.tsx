@@ -7,7 +7,7 @@ type Chat = {
 type Message = {
   id: string;
   chatId: string;
-  sender: string;
+  sender: 'Visitor' | 'Terra' | 'System';
   content: string;
   createdAt: string;
 };
@@ -23,6 +23,26 @@ const formatter = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit'
 });
 const HEALTH_POLL_INTERVAL_MS = 30_000;
+const CONNECT_PROMPT = 'Send your first message to connect with Terra';
+
+function describeRelayFailure(action: string, status: number | null): string {
+  if (status === 401 || status === 403) {
+    return 'That access code was rejected. Double-check it and try again.';
+  }
+  if (status === 404) {
+    return `Terra’s relay hasn’t exposed that endpoint yet (HTTP 404) while trying to ${action}. The server may still be restarting.`;
+  }
+  if (status === 502 || status === 503) {
+    return `Terra’s relay is restarting (HTTP ${status}) while trying to ${action}. The pm2 service should come back shortly.`;
+  }
+  if (status && status >= 500) {
+    return `Terra’s relay hit an internal error (HTTP ${status}) while trying to ${action}. Give it a moment and try again.`;
+  }
+  if (status && status >= 400) {
+    return `We hit an HTTP ${status} error while trying to ${action}.`;
+  }
+  return `We can’t ${action} right now because the relay is offline. We’ll keep retrying automatically.`;
+}
 
 const defaultHttpBase =
   typeof window !== 'undefined'
@@ -79,6 +99,8 @@ export function App() {
   const messageContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const systemNoticeCounterRef = useRef(0);
+  const noticeKeysRef = useRef<Set<string>>(new Set());
   const terraHasResponded = useMemo(() => messages.some((msg) => msg.sender === 'Terra'), [messages]);
   const terraReady = terraHasResponded || llmStatus === 'ready';
   const statusDotState = terraReady ? 'online' : llmStatus === 'checking' ? 'pending' : 'offline';
@@ -90,7 +112,7 @@ export function App() {
       return 'Checking Terra status…';
     }
     if (llmStatus === 'offline') {
-      return 'Waiting for Terra';
+      return CONNECT_PROMPT;
     }
     return 'Enter the access code';
   })();
@@ -105,6 +127,48 @@ export function App() {
     });
   }, []);
 
+  const pushSystemNotice = useCallback(
+    (content: string) => {
+      const notice: Message = {
+        id: `system-${systemNoticeCounterRef.current++}`,
+        chatId: chat?.id ?? 'system',
+        sender: 'System',
+        content,
+        createdAt: new Date().toISOString()
+      };
+      handleAddMessage(notice);
+    },
+    [chat, handleAddMessage]
+  );
+
+  const ensureSystemNotice = useCallback(
+    (key: string, content: string) => {
+      if (noticeKeysRef.current.has(key)) return;
+      noticeKeysRef.current.add(key);
+      pushSystemNotice(content);
+    },
+    [pushSystemNotice]
+  );
+
+  const clearSystemNoticeKey = useCallback((key: string) => {
+    noticeKeysRef.current.delete(key);
+  }, []);
+
+  const clearAllSystemNoticeKeys = useCallback(() => {
+    noticeKeysRef.current.clear();
+  }, []);
+
+  const handleRelayFailure = useCallback(
+    (key: string, action: string, status: number | null, options?: { suppressFormError?: boolean }) => {
+      const notice = describeRelayFailure(action, status);
+      ensureSystemNotice(key, notice);
+      if (!options?.suppressFormError) {
+        setFormError(notice);
+      }
+    },
+    [ensureSystemNotice, setFormError]
+  );
+
   const resetChat = useCallback(() => {
     setChat(null);
     setMessages([]);
@@ -113,11 +177,13 @@ export function App() {
     setLastAckAt(null);
     setLlmStatus('idle');
     setWorkerLastSeenAt(null);
+    setFormError(null);
+    clearAllSystemNoticeKeys();
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
     }
-  }, []);
+  }, [clearAllSystemNoticeKeys]);
 
   useEffect(() => {
     if (awaitingTerra && terraHasResponded) {
@@ -150,19 +216,27 @@ export function App() {
   }, [chat]);
 
   const fetchHistory = useCallback(async () => {
-    if (!chat?.id || !accessCode.trim()) return;
+    if (!chat?.id || !accessCode.trim()) {
+      clearSystemNoticeKey('history');
+      return;
+    }
+    let lastStatus: number | null = null;
     try {
       const historyUrl = new URL(buildUrl(`/api/chat/${chat.id}/messages`));
       historyUrl.searchParams.set('accessCode', accessCode);
       const response = await fetch(historyUrl.toString());
+      lastStatus = response.status;
       if (!response.ok) throw new Error('Unable to load history');
       const data: Message[] = await response.json();
       messageIds.current = new Set(data.map((msg) => msg.id));
       setMessages(data);
+      setFormError(null);
+      clearSystemNoticeKey('history');
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Unable to load history');
+      console.error('Unable to load history', error);
+      handleRelayFailure('history', 'load chat history', lastStatus);
     }
-  }, [chat, accessCode]);
+  }, [chat, accessCode, clearSystemNoticeKey, handleRelayFailure]);
 
   useEffect(() => {
     fetchHistory();
@@ -172,25 +246,31 @@ export function App() {
     if (!chat?.id || !accessCode.trim()) {
       setLlmStatus('idle');
       setWorkerLastSeenAt(null);
+      clearSystemNoticeKey('health');
       return;
     }
 
     let cancelled = false;
     const runHealthCheck = async () => {
       setLlmStatus((prev) => (prev === 'ready' ? prev : 'checking'));
+      let lastStatus: number | null = null;
       try {
         const url = new URL(buildUrl('/api/health'));
         url.searchParams.set('accessCode', accessCode);
         const response = await fetch(url.toString());
+        lastStatus = response.status;
         if (!response.ok) throw new Error('Unable to reach Terra');
         const payload: HealthResponse = await response.json();
         if (cancelled) return;
         setWorkerLastSeenAt(payload.workerLastSeenAt ? new Date(payload.workerLastSeenAt) : null);
         setLlmStatus(payload.workerReady ? 'ready' : 'offline');
-      } catch {
+        clearSystemNoticeKey('health');
+      } catch (error) {
         if (cancelled) return;
+        console.error('Health check failed', error);
         setWorkerLastSeenAt(null);
         setLlmStatus((prev) => (prev === 'ready' ? prev : 'offline'));
+        handleRelayFailure('health', 'check Terra’s status', lastStatus, { suppressFormError: true });
       }
     };
 
@@ -200,7 +280,7 @@ export function App() {
       cancelled = true;
       clearInterval(intervalId);
     };
-  }, [chat, accessCode]);
+  }, [chat, accessCode, clearSystemNoticeKey, handleRelayFailure]);
 
   useEffect(() => {
     if (!chat?.id || !accessCode.trim()) {
@@ -217,9 +297,20 @@ export function App() {
     wsRef.current = socket;
     setSocketStatus('connecting');
 
-    socket.onopen = () => setSocketStatus('connected');
-    socket.onerror = () => setSocketStatus('error');
-    socket.onclose = () => setSocketStatus('idle');
+    socket.onopen = () => {
+      setSocketStatus('connected');
+      clearSystemNoticeKey('socket');
+    };
+    socket.onerror = () => {
+      setSocketStatus('error');
+      handleRelayFailure('socket', 'stream live updates', null, { suppressFormError: true });
+    };
+    socket.onclose = (event) => {
+      setSocketStatus('idle');
+      if (event.code !== 1000) {
+        handleRelayFailure('socket', 'keep the WebSocket connected', null, { suppressFormError: true });
+      }
+    };
     socket.onmessage = (event) => {
       try {
         const payload: Message = JSON.parse(event.data as string);
@@ -233,7 +324,7 @@ export function App() {
       socket.close();
       wsRef.current = null;
     };
-  }, [chat, accessCode, handleAddMessage]);
+  }, [chat, accessCode, handleAddMessage, clearSystemNoticeKey, handleRelayFailure]);
 
   useEffect(() => {
     if (!messageContainerRef.current) return;
@@ -262,6 +353,7 @@ export function App() {
     setAwaitingTerra(false);
     setLlmStatus('checking');
     setWorkerLastSeenAt(null);
+    clearAllSystemNoticeKeys();
     setChat({ id: generateChatId() });
   };
 
@@ -270,6 +362,7 @@ export function App() {
     if (!chat || !messageInput.trim()) {
       return;
     }
+    let lastStatus: number | null = null;
     try {
       const response = await fetch(buildUrl(`/api/chat/${chat.id}/messages`), {
         method: 'POST',
@@ -278,6 +371,7 @@ export function App() {
         },
         body: JSON.stringify({ content: messageInput.trim(), accessCode })
       });
+      lastStatus = response.status;
       if (!response.ok) {
         throw new Error('Unable to send message');
       }
@@ -286,33 +380,46 @@ export function App() {
       setMessageInput('');
       setAwaitingTerra(true);
       setLastAckAt(new Date(message.createdAt));
+      setFormError(null);
+      clearSystemNoticeKey('send');
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Unable to send message');
+      console.error('Unable to send message', error);
+      handleRelayFailure('send', 'send your message', lastStatus);
     }
   };
 
   const messageList = useMemo(() => {
     if (!messages.length) {
-      let emptyMessage = 'Terra will reply once she connects.';
-      if (terraReady) {
-        emptyMessage = 'Ask Terra anything about mbabbott.com.';
-      } else if (llmStatus === 'checking') {
-        emptyMessage = 'Checking on Terra’s availability…';
-      } else if (llmStatus === 'offline') {
-        emptyMessage = 'Terra is warming up—send your first message and it will deliver when she reconnects.';
-      }
-      return <p className="empty">No messages yet. {emptyMessage}</p>;
+      return <p className="empty">No messages yet. Send your first message to connect.</p>;
     }
-    return messages.map((msg) => (
-      <div key={msg.id} className={`message message--${msg.sender === 'Visitor' ? 'visitor' : 'terra'}`}>
-        <div className="message__meta">
-          <span>{msg.sender}</span>
-          <time>{formatter.format(new Date(msg.createdAt))}</time>
+    return messages.map((msg) => {
+      const variant = msg.sender === 'Visitor' ? 'visitor' : msg.sender === 'System' ? 'system' : 'terra';
+      return (
+        <div key={msg.id} className={`message message--${variant}`}>
+          {msg.sender !== 'System' && (
+            <div className="message__meta">
+              <span>{msg.sender}</span>
+              <time>{formatter.format(new Date(msg.createdAt))}</time>
+            </div>
+          )}
+          <p>{msg.content}</p>
         </div>
-        <p>{msg.content}</p>
-      </div>
-    ));
-  }, [messages, terraReady, llmStatus]);
+      );
+    });
+  }, [messages]);
+
+  const composerPlaceholder = useMemo(() => {
+    if (!messages.length) {
+      return CONNECT_PROMPT;
+    }
+    if (terraReady) {
+      return 'Tell Terra what you need…';
+    }
+    if (llmStatus === 'offline') {
+      return 'Terra is booting—type your request and we will hand it to her once she reconnects…';
+    }
+    return 'Checking Terra’s connection…';
+  }, [messages.length, terraReady, llmStatus]);
 
   const ackLabel = useMemo(() => {
     if (!lastAckAt) return null;
@@ -418,13 +525,7 @@ export function App() {
                 ref={textareaRef}
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
-                placeholder={
-                  terraReady
-                    ? 'Tell Terra what you need…'
-                    : llmStatus === 'offline'
-                      ? 'Terra is booting—type your request and we will hand it to her once she reconnects…'
-                      : 'Checking Terra’s connection…'
-                }
+                placeholder={composerPlaceholder}
                 disabled={!chat}
                 rows={1}
                 onInput={autoResizeTextarea}
