@@ -63,6 +63,15 @@ Outputs:
        proxy_set_header Connection "upgrade";
        proxy_set_header Host $host;
    }
+
+   # Worker WebSocket updates
+   location /terrarium/api/worker/updates {
+       proxy_pass http://127.0.0.1:4100/api/worker/updates;
+       proxy_http_version 1.1;
+       proxy_set_header Upgrade $http_upgrade;
+       proxy_set_header Connection "upgrade";
+       proxy_set_header Host $host;
+   }
    ```
    Reload nginx: `sudo systemctl reload nginx`.
 

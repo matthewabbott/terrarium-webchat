@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FocusEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type Chat = {
   id: string;
@@ -12,7 +12,7 @@ type Message = {
   createdAt: string;
 };
 
-type StatusLevel = 'online' | 'degraded' | 'offline' | 'unknown';
+type StatusLevel = 'online' | 'degraded' | 'offline' | 'unknown' | 'locked';
 
 type ChainNode = {
   id: 'frontend' | 'relay' | 'worker' | 'agent' | 'llm';
@@ -40,7 +40,8 @@ const STATUS_LABELS: Record<StatusLevel, string> = {
   online: 'Online',
   degraded: 'Degraded',
   offline: 'Offline',
-  unknown: 'Unknown'
+  unknown: 'Unknown',
+  locked: 'Locked'
 };
 
 function describeRelayFailure(action: string, status: number | null): string {
@@ -119,10 +120,13 @@ function normalizeChain(chain?: ChainNode[] | null): ChainNode[] {
   });
 }
 
-function deriveLlmStatus(chain: ChainNode[]): 'ready' | 'offline' | 'checking' {
+function deriveLlmStatus(chain: ChainNode[]): 'ready' | 'offline' | 'checking' | 'idle' {
   const workerNode = chain.find((node) => node.id === 'worker');
   const agentNode = chain.find((node) => node.id === 'agent');
   const llmNode = chain.find((node) => node.id === 'llm');
+  if ([workerNode, agentNode, llmNode].some((node) => node?.status === 'locked')) {
+    return 'idle';
+  }
   if ([workerNode, agentNode, llmNode].every((node) => node && node.status === 'online')) {
     return 'ready';
   }
@@ -154,10 +158,12 @@ export function App() {
   const [llmStatus, setLlmStatus] = useState<'idle' | 'checking' | 'ready' | 'offline'>('idle');
   const [workerLastSeenAt, setWorkerLastSeenAt] = useState<Date | null>(null);
   const [statusChain, setStatusChain] = useState<ChainNode[]>(() => createDefaultChain());
+  const [isChainExpanded, setIsChainExpanded] = useState(false);
   const [isDarkTheme, setIsDarkTheme] = useState(() => {
     const stored = localStorage.getItem('terra-theme');
     return stored === 'dark';
   });
+  const chainPanelId = 'terra-status-panel';
 
   const messageIds = useRef<Set<string>>(new Set());
   const messageContainerRef = useRef<HTMLDivElement | null>(null);
@@ -189,6 +195,26 @@ export function App() {
       messageIds.current.add(msg.id);
       return [...prev, msg].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     });
+  }, []);
+
+  const handleChainMouseEnter = useCallback(() => {
+    setIsChainExpanded(true);
+  }, []);
+
+  const handleChainMouseLeave = useCallback(() => {
+    setIsChainExpanded(false);
+  }, []);
+
+  const handleChainToggle = useCallback(() => {
+    setIsChainExpanded((prev) => !prev);
+  }, []);
+
+  const handleChainBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    const nextFocus = event.relatedTarget as Node | null;
+    if (nextFocus && event.currentTarget.contains(nextFocus)) {
+      return;
+    }
+    setIsChainExpanded(false);
   }, []);
 
   const pushSystemNotice = useCallback(
@@ -244,6 +270,7 @@ export function App() {
     setStatusChain(createDefaultChain());
     setFormError(null);
     clearAllSystemNoticeKeys();
+    setIsChainExpanded(false);
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -510,7 +537,24 @@ export function App() {
     if (!workerLastSeenAt) return null;
     return `Terra checked in at ${formatter.format(workerLastSeenAt)}.`;
   }, [workerLastSeenAt]);
-  const chainNodes = useMemo(() => statusChain, [statusChain]);
+  const lockStatuses = !accessCode.trim();
+  const chainNodes = useMemo(() => {
+    if (!lockStatuses) {
+      return statusChain;
+    }
+    return statusChain.map((node) => {
+      if (node.id === 'worker' || node.id === 'agent' || node.id === 'llm') {
+        return {
+          ...node,
+          status: 'locked' as StatusLevel,
+          detail: 'Enter the access code to reveal Terra’s internal status.',
+          checkedAt: null,
+          latencyMs: null
+        };
+      }
+      return node;
+    });
+  }, [statusChain, lockStatuses]);
 
   return (
     <>
@@ -555,21 +599,54 @@ export function App() {
         </div>
         <div className="hero__status-cluster">
           <div className={`status-dot status-dot--${statusDotState}`}>{statusDotText}</div>
-          <div className="status-chain" role="list" aria-label="Terra connection status">
-            {chainNodes.map((node, index) => (
-              <div key={node.id} className="status-chain__item">
-                <div className={`status-chain__node status-chain__node--${node.status}`} role="listitem">
-                  <div className="status-chain__label">{node.label}</div>
-                  <div className="status-chain__value">{STATUS_LABELS[node.status]}</div>
-                  {node.detail && <p>{node.detail}</p>}
-                  {!node.detail && node.checkedAt && <p>Updated {formatter.format(new Date(node.checkedAt))}</p>}
-                  {typeof node.latencyMs === 'number' && node.latencyMs >= 0 && (
-                    <p className="status-chain__latency">~{Math.round(node.latencyMs)} ms</p>
-                  )}
+          <div
+            className={`status-chain ${isChainExpanded ? 'status-chain--expanded' : ''}`}
+            onMouseEnter={handleChainMouseEnter}
+            onMouseLeave={handleChainMouseLeave}
+            onFocus={handleChainMouseEnter}
+            onBlur={handleChainBlur}
+          >
+            <button
+              type="button"
+              className="status-chain__toggle"
+              onClick={handleChainToggle}
+              aria-expanded={isChainExpanded}
+              aria-controls={chainPanelId}
+            >
+              <span className="status-chain__toggle-label">Terra status</span>
+              <span className="status-chain__dots" aria-hidden="true">
+                {chainNodes.map((node, index) => (
+                  <span key={node.id} className="status-chain__dot-group">
+                    <span className={`status-chain__dot status-chain__dot--${node.status}`} />
+                    {index < chainNodes.length - 1 && <span className="status-chain__dot-connector" />}
+                  </span>
+                ))}
+              </span>
+              <span className="status-chain__chevron" aria-hidden="true">
+                {isChainExpanded ? '▲' : '▼'}
+              </span>
+            </button>
+            <div
+              id={chainPanelId}
+              role="list"
+              className={`status-chain__panel ${isChainExpanded ? 'status-chain__panel--visible' : ''}`}
+              aria-label="Terra connection status"
+            >
+              {chainNodes.map((node, index) => (
+                <div key={node.id} className="status-chain__item">
+                  <div className={`status-chain__node status-chain__node--${node.status}`} role="listitem">
+                    <div className="status-chain__label">{node.label}</div>
+                    <div className="status-chain__value">{STATUS_LABELS[node.status]}</div>
+                    {node.detail && <p>{node.detail}</p>}
+                    {!node.detail && node.checkedAt && <p>Updated {formatter.format(new Date(node.checkedAt))}</p>}
+                    {typeof node.latencyMs === 'number' && node.latencyMs >= 0 && (
+                      <p className="status-chain__latency">~{Math.round(node.latencyMs)} ms</p>
+                    )}
+                  </div>
+                  {index < chainNodes.length - 1 && <span className="status-chain__connector" aria-hidden="true" />}
                 </div>
-                {index < chainNodes.length - 1 && <span className="status-chain__connector" aria-hidden="true" />}
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         </div>
       </header>
