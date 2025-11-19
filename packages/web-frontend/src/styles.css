@@ -230,6 +230,12 @@ h1 {
   color: var(--status-offline-text);
 }
 
+.status-dot--pending {
+  border-color: var(--border-primary);
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
 .terrarium-intro,
 .access-panel,
 .chat-panel {

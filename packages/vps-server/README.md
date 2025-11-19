@@ -9,6 +9,7 @@ Lightweight Express + WebSocket relay that runs on the VPS. It gates visitor acc
 | `GET` | `/api/chat/:chatId/messages` | access code or `x-service-token` | Fetch chat transcript. |
 | `GET` | `/api/chats/open` | `x-service-token` | Worker polls for chats needing attention. |
 | `POST` | `/api/chat/:chatId/agent` | `x-service-token` | Worker posts Terra’s reply. |
+| `GET` | `/api/health` | access code in query | Relay + worker heartbeat status for the UI. |
 | `WS` | `/api/chat?chatId=…&accessCode=…` | access code in query | Live stream of chat messages. |
 
 ## Scripts
@@ -24,6 +25,7 @@ CHAT_PASSWORD=terra-access
 SERVICE_TOKEN=super-secret-service-token
 PORT=4100
 BASE_PATH=/terrarium   # optional; defaults to empty so routes live at /api
+WORKER_STALE_THRESHOLD_MS=60000  # optional; heartbeat freshness window for /api/health
 ```
 
 When `BASE_PATH` is set, HTTP routes live at `<BASE_PATH>/api/*` and the WebSocket listens at `<BASE_PATH>/api/chat`. Leave it empty for local dev.

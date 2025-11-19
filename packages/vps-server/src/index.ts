@@ -8,6 +8,7 @@ const CHAT_PASSWORD = process.env.CHAT_PASSWORD ?? 'terra-access';
 const SERVICE_TOKEN = process.env.SERVICE_TOKEN ?? 'super-secret-service-token';
 const PORT = Number(process.env.PORT ?? 4100);
 const BASE_PATH = (process.env.BASE_PATH ?? '').replace(/\/$/, '');
+const WORKER_STALE_THRESHOLD_MS = Number(process.env.WORKER_STALE_THRESHOLD_MS ?? 60_000);
 
 interface Message {
   id: string;
@@ -19,11 +20,16 @@ interface Message {
 
 const chats = new Map<string, Message[]>();
 const connections = new Map<string, Set<WebSocket>>();
+let lastWorkerSeenAt: number | null = null;
 
 const app = express();
 app.use(express.json());
 
 const apiRouter = express.Router();
+
+function recordWorkerHeartbeat() {
+  lastWorkerSeenAt = Date.now();
+}
 
 function ensureChat(chatId: string): Message[] {
   if (!chats.has(chatId)) {
@@ -68,7 +74,9 @@ apiRouter.get('/chat/:chatId/messages', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const accessCode = (req.query.accessCode as string | undefined) ?? undefined;
   const token = req.headers['x-service-token'];
-  if (token !== SERVICE_TOKEN && accessCode !== CHAT_PASSWORD) {
+  if (token === SERVICE_TOKEN) {
+    recordWorkerHeartbeat();
+  } else if (accessCode !== CHAT_PASSWORD) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   res.json(ensureChat(chatId));
@@ -80,6 +88,7 @@ apiRouter.post('/chat/:chatId/agent', (req: Request, res: Response) => {
   if (token !== SERVICE_TOKEN) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  recordWorkerHeartbeat();
   const { content } = req.body as { content?: string };
   if (!content || typeof content !== 'string') {
     return res.status(400).json({ error: 'Message content required' });
@@ -101,10 +110,28 @@ apiRouter.get('/chats/open', (req: Request, res: Response) => {
   if (token !== SERVICE_TOKEN) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  recordWorkerHeartbeat();
   res.json({ chatIds: Array.from(chats.keys()) });
 });
 
-const mountPoints = new Set<string>([BASE_PATH ? `${BASE_PATH}/api` : '/api']);
+apiRouter.get('/health', (req: Request, res: Response) => {
+  const accessCode = (req.query.accessCode as string | undefined) ?? undefined;
+  if (accessCode !== CHAT_PASSWORD) {
+    return res.status(401).json({ error: 'Invalid access code' });
+  }
+  const workerReady =
+    lastWorkerSeenAt !== null ? Date.now() - lastWorkerSeenAt <= WORKER_STALE_THRESHOLD_MS : false;
+  res.json({
+    relay: 'ok',
+    workerReady,
+    workerLastSeenAt: lastWorkerSeenAt ? new Date(lastWorkerSeenAt).toISOString() : null
+  });
+});
+
+const mountPoints = new Set<string>(['/api']);
+if (BASE_PATH) {
+  mountPoints.add(`${BASE_PATH}/api`);
+}
 for (const mount of mountPoints) {
   app.use(mount, apiRouter);
 }

@@ -12,10 +12,17 @@ type Message = {
   createdAt: string;
 };
 
+type HealthResponse = {
+  relay: string;
+  workerReady: boolean;
+  workerLastSeenAt: string | null;
+};
+
 const formatter = new Intl.DateTimeFormat(undefined, {
   hour: '2-digit',
   minute: '2-digit'
 });
+const HEALTH_POLL_INTERVAL_MS = 30_000;
 
 const defaultHttpBase =
   typeof window !== 'undefined'
@@ -58,10 +65,11 @@ export function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
-  const [terraConnected, setTerraConnected] = useState(false);
   const [awaitingTerra, setAwaitingTerra] = useState(false);
   const [lastAckAt, setLastAckAt] = useState<Date | null>(null);
   const [socketStatus, setSocketStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
+  const [llmStatus, setLlmStatus] = useState<'idle' | 'checking' | 'ready' | 'offline'>('idle');
+  const [workerLastSeenAt, setWorkerLastSeenAt] = useState<Date | null>(null);
   const [isDarkTheme, setIsDarkTheme] = useState(() => {
     const stored = localStorage.getItem('terra-theme');
     return stored === 'dark';
@@ -71,6 +79,21 @@ export function App() {
   const messageContainerRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const terraHasResponded = useMemo(() => messages.some((msg) => msg.sender === 'Terra'), [messages]);
+  const terraReady = terraHasResponded || llmStatus === 'ready';
+  const statusDotState = terraReady ? 'online' : llmStatus === 'checking' ? 'pending' : 'offline';
+  const statusDotText = (() => {
+    if (terraReady) {
+      return 'Terra is listening';
+    }
+    if (llmStatus === 'checking') {
+      return 'Checking Terra status…';
+    }
+    if (llmStatus === 'offline') {
+      return 'Waiting for Terra';
+    }
+    return 'Enter the access code';
+  })();
 
   const handleAddMessage = useCallback((msg: Message) => {
     setMessages((prev) => {
@@ -86,9 +109,10 @@ export function App() {
     setChat(null);
     setMessages([]);
     messageIds.current.clear();
-    setTerraConnected(false);
     setAwaitingTerra(false);
     setLastAckAt(null);
+    setLlmStatus('idle');
+    setWorkerLastSeenAt(null);
     if (wsRef.current) {
       wsRef.current.close();
       wsRef.current = null;
@@ -96,13 +120,13 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!terraConnected && messages.some((msg) => msg.sender === 'Terra')) {
-      setTerraConnected(true);
-    }
-    if (awaitingTerra && messages.some((msg) => msg.sender === 'Terra')) {
+    if (awaitingTerra && terraHasResponded) {
       setAwaitingTerra(false);
     }
-  }, [messages, terraConnected, awaitingTerra]);
+    if (terraHasResponded) {
+      setLlmStatus('ready');
+    }
+  }, [awaitingTerra, terraHasResponded]);
 
   useEffect(() => {
     sessionStorage.setItem('terrarium-access-code', accessCode);
@@ -128,16 +152,13 @@ export function App() {
   const fetchHistory = useCallback(async () => {
     if (!chat?.id || !accessCode.trim()) return;
     try {
-      const historyUrl = new URL(`/api/chat/${chat.id}/messages`, API_BASE);
+      const historyUrl = new URL(buildUrl(`/api/chat/${chat.id}/messages`));
       historyUrl.searchParams.set('accessCode', accessCode);
       const response = await fetch(historyUrl.toString());
       if (!response.ok) throw new Error('Unable to load history');
       const data: Message[] = await response.json();
       messageIds.current = new Set(data.map((msg) => msg.id));
       setMessages(data);
-      if (data.some((msg) => msg.sender === 'Terra')) {
-        setTerraConnected(true);
-      }
     } catch (error) {
       setFormError(error instanceof Error ? error.message : 'Unable to load history');
     }
@@ -146,6 +167,40 @@ export function App() {
   useEffect(() => {
     fetchHistory();
   }, [fetchHistory]);
+
+  useEffect(() => {
+    if (!chat?.id || !accessCode.trim()) {
+      setLlmStatus('idle');
+      setWorkerLastSeenAt(null);
+      return;
+    }
+
+    let cancelled = false;
+    const runHealthCheck = async () => {
+      setLlmStatus((prev) => (prev === 'ready' ? prev : 'checking'));
+      try {
+        const url = new URL(buildUrl('/api/health'));
+        url.searchParams.set('accessCode', accessCode);
+        const response = await fetch(url.toString());
+        if (!response.ok) throw new Error('Unable to reach Terra');
+        const payload: HealthResponse = await response.json();
+        if (cancelled) return;
+        setWorkerLastSeenAt(payload.workerLastSeenAt ? new Date(payload.workerLastSeenAt) : null);
+        setLlmStatus(payload.workerReady ? 'ready' : 'offline');
+      } catch {
+        if (cancelled) return;
+        setWorkerLastSeenAt(null);
+        setLlmStatus((prev) => (prev === 'ready' ? prev : 'offline'));
+      }
+    };
+
+    runHealthCheck();
+    const intervalId = setInterval(runHealthCheck, HEALTH_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(intervalId);
+    };
+  }, [chat, accessCode]);
 
   useEffect(() => {
     if (!chat?.id || !accessCode.trim()) {
@@ -204,8 +259,9 @@ export function App() {
     setFormError(null);
     setMessages([]);
     messageIds.current.clear();
-    setTerraConnected(false);
     setAwaitingTerra(false);
+    setLlmStatus('checking');
+    setWorkerLastSeenAt(null);
     setChat({ id: generateChatId() });
   };
 
@@ -237,11 +293,15 @@ export function App() {
 
   const messageList = useMemo(() => {
     if (!messages.length) {
-      return (
-        <p className="empty">
-          No messages yet. {terraConnected ? 'Ask Terra anything about mbabbott.com.' : 'Terra will reply once she connects.'}
-        </p>
-      );
+      let emptyMessage = 'Terra will reply once she connects.';
+      if (terraReady) {
+        emptyMessage = 'Ask Terra anything about mbabbott.com.';
+      } else if (llmStatus === 'checking') {
+        emptyMessage = 'Checking on Terra’s availability…';
+      } else if (llmStatus === 'offline') {
+        emptyMessage = 'Terra is warming up—send your first message and it will deliver when she reconnects.';
+      }
+      return <p className="empty">No messages yet. {emptyMessage}</p>;
     }
     return messages.map((msg) => (
       <div key={msg.id} className={`message message--${msg.sender === 'Visitor' ? 'visitor' : 'terra'}`}>
@@ -252,12 +312,16 @@ export function App() {
         <p>{msg.content}</p>
       </div>
     ));
-  }, [messages, terraConnected]);
+  }, [messages, terraReady, llmStatus]);
 
   const ackLabel = useMemo(() => {
     if (!lastAckAt) return null;
     return `Message sent at ${formatter.format(lastAckAt)}.`;
   }, [lastAckAt]);
+  const heartbeatLabel = useMemo(() => {
+    if (!workerLastSeenAt) return null;
+    return `Terra checked in at ${formatter.format(workerLastSeenAt)}.`;
+  }, [workerLastSeenAt]);
 
   return (
     <>
@@ -300,9 +364,7 @@ export function App() {
           </p>
           <p className="coming-soon">Coming soon: link(s) to about pages for my 'terrarium' projects.</p>
         </div>
-        <div className={`status-dot ${terraConnected ? 'status-dot--online' : 'status-dot--offline'}`}>
-          {terraConnected ? 'Terra is listening' : 'Waiting for Terra'}
-        </div>
+        <div className={`status-dot status-dot--${statusDotState}`}>{statusDotText}</div>
       </header>
 
       <section className="terrarium-intro">
@@ -356,7 +418,13 @@ export function App() {
                 ref={textareaRef}
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
-                placeholder={terraConnected ? 'Tell Terra what you need…' : 'Waiting for Terra to connect…'}
+                placeholder={
+                  terraReady
+                    ? 'Tell Terra what you need…'
+                    : llmStatus === 'offline'
+                      ? 'Terra is booting—type your request and we will hand it to her once she reconnects…'
+                      : 'Checking Terra’s connection…'
+                }
                 disabled={!chat}
                 rows={1}
                 onInput={autoResizeTextarea}
@@ -367,7 +435,11 @@ export function App() {
             </form>
             <div className="status-row">
               {ackLabel && <span>{ackLabel}</span>}
-              {!terraConnected && <span>Messages queue here until Terra reconnects.</span>}
+              {heartbeatLabel && <span>{heartbeatLabel}</span>}
+              {!terraReady && llmStatus === 'offline' && (
+                <span>Terra is waking up. Messages queue here until she reconnects.</span>
+              )}
+              {!terraReady && llmStatus === 'checking' && <span>Verifying Terra’s connection…</span>}
             </div>
           </>
         )}

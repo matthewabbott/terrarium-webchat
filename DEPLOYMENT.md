@@ -38,6 +38,7 @@ Outputs:
    SERVICE_TOKEN=super-secret-service-token  # shared secret with the worker
    PORT=4100                                 # relay port (match nginx proxy)
    BASE_PATH=/terrarium                      # mount REST + WS under /terrarium/api
+   WORKER_STALE_THRESHOLD_MS=60000           # optional heartbeat freshness window for /api/health
    ```
 5. **PM2 service**:
    ```bash
@@ -114,6 +115,7 @@ The worker polls `/api/chats/open`, fetches messages per chat, calls terrarium-a
 ## 5. Verification checklist
 
 - `curl https://mbabbott.com/terrarium/api/chats/open -H 'x-service-token: …'` returns a JSON list (empty when idle).
+- `curl 'https://mbabbott.com/terrarium/api/health?accessCode=terra-access'` confirms `workerReady` flips to `true` when the terrarium worker polls.
 - `wscat -c wss://mbabbott.com/terrarium/api/chat?chatId=<id>&accessCode=terra-access` streams messages.
 - Vite widget loads on mbabbott.com/terra, accepts the access code, and shows new messages.
 - `pm2 logs terrarium-rest-chat` shows visitor messages arriving, plus worker POSTs.
