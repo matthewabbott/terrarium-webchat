@@ -34,10 +34,18 @@ interface WorkerStatusPayload {
 
 type ChainNode = ComponentStatus & { id: string; label: string };
 
+type WorkerEvent = {
+  type: 'chat_activity';
+  chatId: string;
+  messageId: string;
+  emittedAt: string;
+};
+
 const chats = new Map<string, Message[]>();
 const connections = new Map<string, Set<WebSocket>>();
 let lastWorkerSeenAt: number | null = null;
 let workerStatus: WorkerStatusPayload | null = null;
+const workerSockets = new Set<WebSocket>();
 
 const app = express();
 app.use(express.json());
@@ -65,6 +73,17 @@ function broadcast(chatId: string, message: Message) {
   }
 }
 
+function notifyWorkers(event: WorkerEvent) {
+  const payload = JSON.stringify(event);
+  for (const socket of workerSockets) {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(payload);
+    } else {
+      workerSockets.delete(socket);
+    }
+  }
+}
+
 apiRouter.post('/chat/:chatId/messages', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const { content, accessCode } = req.body as { content?: string; accessCode?: string };
@@ -84,6 +103,12 @@ apiRouter.post('/chat/:chatId/messages', (req: Request, res: Response) => {
   };
   ensureChat(chatId).push(message);
   broadcast(chatId, message);
+  notifyWorkers({
+    type: 'chat_activity',
+    chatId,
+    messageId: message.id,
+    emittedAt: new Date().toISOString()
+  });
   res.json(message);
 });
 
@@ -217,7 +242,9 @@ for (const mount of mountPoints) {
 
 const server = createServer(app);
 const wsServer = new WebSocketServer({ noServer: true });
-const wsPaths = new Set<string>(Array.from(mountPoints, (mount) => `${mount}/chat`));
+const chatWsPaths = new Set<string>(Array.from(mountPoints, (mount) => `${mount}/chat`));
+const workerWsPaths = new Set<string>(Array.from(mountPoints, (mount) => `${mount}/worker/updates`));
+const wsPaths = new Set<string>([...chatWsPaths, ...workerWsPaths]);
 
 server.on('upgrade', (request, socket, head) => {
   try {
@@ -236,6 +263,26 @@ server.on('upgrade', (request, socket, head) => {
 
 wsServer.on('connection', (socket, request) => {
   const url = new URL(request.url ?? '', 'http://localhost');
+  const pathname = url.pathname ?? '';
+
+  if (workerWsPaths.has(pathname)) {
+    const token = request.headers['x-service-token'];
+    if (token !== SERVICE_TOKEN) {
+      socket.close(1008, 'Unauthorized');
+      return;
+    }
+    workerSockets.add(socket);
+    socket.on('close', () => {
+      workerSockets.delete(socket);
+    });
+    return;
+  }
+
+  if (!chatWsPaths.has(pathname)) {
+    socket.close(1008, 'Unknown path');
+    return;
+  }
+
   const chatId = url.searchParams.get('chatId');
   const accessCode = url.searchParams.get('accessCode');
   if (!chatId || accessCode !== CHAT_PASSWORD) {

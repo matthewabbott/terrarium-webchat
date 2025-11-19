@@ -7,6 +7,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urlparse, urlunparse
 
 from rich.console import Console
 
@@ -28,6 +29,18 @@ class Settings:
     agent_health_url: Optional[str]
     status_probe_interval: float
     llm_probe_interval: float
+    worker_updates_url: str
+    worker_ws_retry: float
+
+
+def derive_worker_updates_url(api_base_url: str) -> str:
+    parsed = urlparse(api_base_url)
+    scheme = 'wss' if parsed.scheme == 'https' else 'ws'
+    base_path = parsed.path.rstrip('/')
+    full_path = f"{base_path}/api/worker/updates"
+    if not full_path.startswith('/'):
+        full_path = '/' + full_path
+    return urlunparse(parsed._replace(scheme=scheme, path=full_path, query='', fragment=''))
 
 
 def load_settings() -> Settings:
@@ -39,6 +52,8 @@ def load_settings() -> Settings:
     agent_health_url = os.environ.get("AGENT_HEALTH_URL")
     status_probe_interval = float(os.environ.get("STATUS_POLL_INTERVAL_SECONDS", "30"))
     llm_probe_interval = float(os.environ.get("LLM_STATUS_POLL_INTERVAL_SECONDS", "180"))
+    worker_updates_url = os.environ.get("WORKER_WS_URL")
+    worker_ws_retry = float(os.environ.get("WORKER_WS_RETRY_SECONDS", "5"))
 
     missing = [name for name, value in {"API_BASE_URL": api_base_url, "SERVICE_TOKEN": service_token, "AGENT_API_URL": agent_api_url}.items() if not value]
     if missing:
@@ -53,6 +68,8 @@ def load_settings() -> Settings:
         agent_health_url=agent_health_url,
         status_probe_interval=status_probe_interval,
         llm_probe_interval=llm_probe_interval,
+        worker_updates_url=worker_updates_url or derive_worker_updates_url(api_base_url),
+        worker_ws_retry=worker_ws_retry,
     )
 
 
@@ -73,6 +90,8 @@ async def main() -> None:
             poll_interval=settings.poll_interval,
             status_probe_interval=settings.status_probe_interval,
             llm_probe_interval=settings.llm_probe_interval,
+            worker_updates_url=settings.worker_updates_url,
+            worker_ws_retry=settings.worker_ws_retry,
         )
 
         try:

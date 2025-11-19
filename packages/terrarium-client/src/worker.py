@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from contextlib import suppress
 from datetime import datetime, timedelta
 from typing import Dict, Optional
+
+from websockets.client import connect as ws_connect
 
 from .agent import AgentClient, AgentClientError
 from .context import Conversation
@@ -26,6 +29,8 @@ class TerrariumWorker:
         max_turns: int = 16,
         status_probe_interval: float = 30.0,
         llm_probe_interval: float = 180.0,
+        worker_updates_url: Optional[str] = None,
+        worker_ws_retry: float = 5.0,
     ) -> None:
         self.relay = relay
         self.agent = agent
@@ -33,15 +38,24 @@ class TerrariumWorker:
         self.max_turns = max_turns
         self.status_probe_interval = status_probe_interval
         self.llm_probe_interval = llm_probe_interval
+        self.worker_updates_url = worker_updates_url
+        self.worker_ws_retry = worker_ws_retry
         self._conversations: Dict[str, Conversation] = {}
         self._processed_message_ids: set[str] = set()
         self._agent_api_status = ComponentStatus()
         self._llm_status = ComponentStatus()
         self._status_task: Optional[asyncio.Task[None]] = None
+        self._worker_updates_task: Optional[asyncio.Task[None]] = None
+        self._queue_worker: Optional[asyncio.Task[None]] = None
+        self._chat_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._pending_chat_ids: set[str] = set()
 
     async def run_forever(self) -> None:
         logger.info("Worker started with poll interval %.1fs", self.poll_interval)
         self._status_task = asyncio.create_task(self._status_probe_loop())
+        if self.worker_updates_url:
+            self._queue_worker = asyncio.create_task(self._chat_queue_worker())
+            self._worker_updates_task = asyncio.create_task(self._worker_updates_loop())
         try:
             while True:
                 try:
@@ -50,17 +64,22 @@ class TerrariumWorker:
                     logger.exception("Worker tick failed: %s", exc)
                 await asyncio.sleep(self.poll_interval)
         finally:
-            if self._status_task is not None:
-                self._status_task.cancel()
+            tasks = [self._status_task, self._queue_worker, self._worker_updates_task]
+            for task in tasks:
+                if task is None:
+                    continue
+                task.cancel()
                 with suppress(asyncio.CancelledError):
-                    await self._status_task
+                    await task
 
     async def tick(self) -> None:
         chats = await self.relay.fetch_open_chats()
         for chat in chats:
-            chat_id = chat["id"]
-            conversation = self._conversations.setdefault(chat_id, Conversation(chat_id=chat_id))
-            await self._sync_chat(conversation)
+            await self._process_chat(chat["id"])
+
+    async def _process_chat(self, chat_id: str) -> None:
+        conversation = self._conversations.setdefault(chat_id, Conversation(chat_id=chat_id))
+        await self._sync_chat(conversation)
 
     async def _sync_chat(self, conversation: Conversation) -> None:
         messages = await self.relay.fetch_messages(conversation.chat_id)
@@ -91,6 +110,44 @@ class TerrariumWorker:
         conversation.add_turn("assistant", response)
         await self.relay.post_agent_message(conversation.chat_id, response)
         await self._publish_status()
+
+    def _enqueue_chat(self, chat_id: str) -> None:
+        if chat_id in self._pending_chat_ids:
+            return
+        self._pending_chat_ids.add(chat_id)
+        self._chat_queue.put_nowait(chat_id)
+
+    async def _chat_queue_worker(self) -> None:
+        while True:
+            chat_id = await self._chat_queue.get()
+            try:
+                await self._process_chat(chat_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Queue worker failed for chat %s: %s", chat_id, exc)
+            finally:
+                self._pending_chat_ids.discard(chat_id)
+                self._chat_queue.task_done()
+
+    async def _worker_updates_loop(self) -> None:
+        assert self.worker_updates_url is not None
+        headers = [("x-service-token", self.relay.service_token)]
+        while True:
+            try:
+                async with ws_connect(self.worker_updates_url, extra_headers=headers) as websocket:
+                    logger.info("Connected to worker updates stream")
+                    async for raw in websocket:
+                        try:
+                            payload = json.loads(raw)
+                        except json.JSONDecodeError:
+                            logger.warning("Ignoring invalid worker event payload")
+                            continue
+                        if payload.get("type") == "chat_activity":
+                            chat_id = payload.get("chatId")
+                            if isinstance(chat_id, str):
+                                self._enqueue_chat(chat_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Worker updates stream error: %s", exc)
+                await asyncio.sleep(self.worker_ws_retry)
 
     async def _status_probe_loop(self) -> None:
         try:
