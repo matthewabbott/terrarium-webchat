@@ -104,6 +104,9 @@ class TerrariumWorker:
     ) -> None:
         logger.info("Processing message %s for chat %s", message["id"], conversation.chat_id)
         conversation.prune(self.max_turns)
+        await self._update_worker_state(conversation.chat_id, "processing")
+        worker_state = "responded"
+        worker_state_detail: Optional[str] = None
         try:
             response, latency_ms = await self.agent.generate(conversation)
             self._llm_status.mark(
@@ -115,12 +118,17 @@ class TerrariumWorker:
             logger.error("Agent generate failed: %s", exc)
             self._llm_status.mark("offline", detail=str(exc))
             response = "I had trouble talking to Terra's core service. Please try again shortly."
+            worker_state = "error"
+            worker_state_detail = str(exc)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unexpected error while generating a response: %s", exc)
             self._llm_status.mark("offline", detail=str(exc))
             response = "Terra hit an unexpected issue. Please try again in a moment."
+            worker_state = "error"
+            worker_state_detail = str(exc)
         conversation.add_turn("assistant", response)
         await self.relay.post_agent_message(conversation.chat_id, response)
+        await self._update_worker_state(conversation.chat_id, worker_state, worker_state_detail)
         await self._publish_status()
 
     def _enqueue_chat(self, chat_id: str) -> None:
@@ -192,3 +200,14 @@ class TerrariumWorker:
             await self.relay.post_worker_status(report)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Unable to publish worker status: %s", exc)
+
+    async def _update_worker_state(
+        self,
+        chat_id: str,
+        state: str,
+        detail: Optional[str] = None,
+    ) -> None:
+        try:
+            await self.relay.post_worker_state(chat_id, state, detail)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Unable to update worker state: %s", exc)

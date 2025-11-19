@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -58,6 +58,22 @@ class RelayClient:
             f"{self.api_base_url}/api/worker/status",
             headers=self._headers,
             json=report.to_payload(),
+        )
+        response.raise_for_status()
+
+    async def post_worker_state(
+        self,
+        chat_id: str,
+        state: str,
+        detail: Optional[str] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {"state": state}
+        if detail:
+            payload["detail"] = detail
+        response = await self._client.post(
+            f"{self.api_base_url}/api/chat/{chat_id}/worker-state",
+            headers=self._headers,
+            json=payload,
         )
         response.raise_for_status()
 

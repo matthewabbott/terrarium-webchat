@@ -41,11 +41,20 @@ type WorkerEvent = {
   emittedAt: string;
 };
 
+type WorkerStateValue = 'idle' | 'queued' | 'processing' | 'responded' | 'error';
+
+interface WorkerStatePayload {
+  state: WorkerStateValue;
+  detail: string | null;
+  updatedAt: string;
+}
+
 const chats = new Map<string, Message[]>();
 const connections = new Map<string, Set<WebSocket>>();
 let lastWorkerSeenAt: number | null = null;
 let workerStatus: WorkerStatusPayload | null = null;
 const workerSockets = new Set<WebSocket>();
+const chatWorkerStates = new Map<string, WorkerStatePayload>();
 
 const app = express();
 app.use(express.json());
@@ -84,6 +93,43 @@ function notifyWorkers(event: WorkerEvent) {
   }
 }
 
+function getWorkerState(chatId: string): WorkerStatePayload {
+  return (
+    chatWorkerStates.get(chatId) ?? {
+      state: 'idle',
+      detail: null,
+      updatedAt: new Date(0).toISOString()
+    }
+  );
+}
+
+function setWorkerState(chatId: string, state: WorkerStateValue, detail?: string | null) {
+  const payload: WorkerStatePayload = {
+    state,
+    detail: detail ?? null,
+    updatedAt: new Date().toISOString()
+  };
+  chatWorkerStates.set(chatId, payload);
+  broadcastWorkerState(chatId, payload);
+}
+
+function broadcastWorkerState(chatId: string, payload: WorkerStatePayload) {
+  const sockets = connections.get(chatId);
+  if (!sockets) return;
+  const message = JSON.stringify({
+    type: 'workerState',
+    chatId,
+    state: payload.state,
+    detail: payload.detail,
+    updatedAt: payload.updatedAt
+  });
+  for (const socket of sockets) {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(message);
+    }
+  }
+}
+
 apiRouter.post('/chat/:chatId/messages', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const { content, accessCode } = req.body as { content?: string; accessCode?: string };
@@ -109,6 +155,7 @@ apiRouter.post('/chat/:chatId/messages', (req: Request, res: Response) => {
     messageId: message.id,
     emittedAt: new Date().toISOString()
   });
+  setWorkerState(chatId, 'queued');
   res.json(message);
 });
 
@@ -186,6 +233,32 @@ apiRouter.post('/worker/status', (req: Request, res: Response) => {
   };
   recordWorkerHeartbeat();
   return res.json({ ok: true });
+});
+
+const workerStateValues: WorkerStateValue[] = ['idle', 'queued', 'processing', 'responded', 'error'];
+
+apiRouter.post('/chat/:chatId/worker-state', (req: Request, res: Response) => {
+  const token = req.headers['x-service-token'];
+  if (token !== SERVICE_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { chatId } = req.params;
+  const { state, detail } = req.body as { state?: WorkerStateValue; detail?: string | null };
+  if (!state || !workerStateValues.includes(state)) {
+    return res.status(400).json({ error: 'Invalid worker state' });
+  }
+  setWorkerState(chatId, state, typeof detail === 'string' ? detail : null);
+  return res.json({ ok: true });
+});
+
+apiRouter.get('/chat/:chatId/worker-state', (req: Request, res: Response) => {
+  const { chatId } = req.params;
+  const accessCode = (req.query.accessCode as string | undefined) ?? undefined;
+  const token = req.headers['x-service-token'];
+  if (token !== SERVICE_TOKEN && accessCode !== CHAT_PASSWORD) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  res.json(getWorkerState(chatId));
 });
 
 apiRouter.get('/health', (req: Request, res: Response) => {

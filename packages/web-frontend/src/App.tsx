@@ -30,6 +30,14 @@ type HealthResponse = {
   chain?: ChainNode[];
 };
 
+type WorkerStateValue = 'idle' | 'queued' | 'processing' | 'responded' | 'error';
+
+type WorkerState = {
+  state: WorkerStateValue;
+  detail: string | null;
+  updatedAt: string | null;
+};
+
 const formatter = new Intl.DateTimeFormat(undefined, {
   hour: '2-digit',
   minute: '2-digit'
@@ -102,6 +110,10 @@ function createDefaultChain(): ChainNode[] {
   return DEFAULT_CHAIN.map((node) => ({ ...node }));
 }
 
+function createDefaultWorkerState(): WorkerState {
+  return { state: 'idle', detail: null, updatedAt: null };
+}
+
 function normalizeChain(chain?: ChainNode[] | null): ChainNode[] {
   if (!chain?.length) {
     return createDefaultChain();
@@ -152,7 +164,7 @@ export function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
-  const [awaitingTerra, setAwaitingTerra] = useState(false);
+  const [workerState, setWorkerState] = useState<WorkerState>(() => createDefaultWorkerState());
   const [lastAckAt, setLastAckAt] = useState<Date | null>(null);
   const [socketStatus, setSocketStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
   const [llmStatus, setLlmStatus] = useState<'idle' | 'checking' | 'ready' | 'offline'>('idle');
@@ -173,6 +185,7 @@ export function App() {
   const noticeKeysRef = useRef<Set<string>>(new Set());
   const terraHasResponded = useMemo(() => messages.some((msg) => msg.sender === 'Terra'), [messages]);
   const terraReady = terraHasResponded || llmStatus === 'ready';
+  const awaitingTerra = workerState.state === 'queued' || workerState.state === 'processing';
   const statusDotState = terraReady ? 'online' : llmStatus === 'checking' ? 'pending' : 'offline';
   const statusDotText = (() => {
     if (terraReady) {
@@ -263,11 +276,11 @@ export function App() {
     setChat(null);
     setMessages([]);
     messageIds.current.clear();
-    setAwaitingTerra(false);
     setLastAckAt(null);
     setLlmStatus('idle');
     setWorkerLastSeenAt(null);
     setStatusChain(createDefaultChain());
+    setWorkerState(createDefaultWorkerState());
     setFormError(null);
     clearAllSystemNoticeKeys();
     setIsChainExpanded(false);
@@ -278,13 +291,10 @@ export function App() {
   }, [clearAllSystemNoticeKeys]);
 
   useEffect(() => {
-    if (awaitingTerra && terraHasResponded) {
-      setAwaitingTerra(false);
-    }
     if (terraHasResponded) {
       setLlmStatus((prev) => (prev === 'offline' ? 'offline' : 'ready'));
     }
-  }, [awaitingTerra, terraHasResponded]);
+  }, [terraHasResponded]);
 
   useEffect(() => {
     sessionStorage.setItem('terrarium-access-code', accessCode);
@@ -307,6 +317,31 @@ export function App() {
     }
   }, [chat]);
 
+  const fetchWorkerState = useCallback(async () => {
+    if (!chat?.id || !accessCode.trim()) {
+      setWorkerState(createDefaultWorkerState());
+      return;
+    }
+    let lastStatus: number | null = null;
+    try {
+      const stateUrl = new URL(buildUrl(`/api/chat/${chat.id}/worker-state`));
+      stateUrl.searchParams.set('accessCode', accessCode);
+      const response = await fetch(stateUrl.toString());
+      lastStatus = response.status;
+      if (!response.ok) throw new Error('Unable to load worker state');
+      const payload = await response.json();
+      setWorkerState({
+        state: (payload.state as WorkerStateValue) ?? 'idle',
+        detail: payload.detail ?? null,
+        updatedAt: payload.updatedAt ?? null
+      });
+      clearSystemNoticeKey('workerState');
+    } catch (error) {
+      console.error('Unable to load worker state', error);
+      handleRelayFailure('workerState', 'check Terra’s queue', lastStatus, { suppressFormError: true });
+    }
+  }, [chat, accessCode, clearSystemNoticeKey, handleRelayFailure]);
+
   const fetchHistory = useCallback(async () => {
     if (!chat?.id || !accessCode.trim()) {
       clearSystemNoticeKey('history');
@@ -324,11 +359,12 @@ export function App() {
       setMessages(data);
       setFormError(null);
       clearSystemNoticeKey('history');
+      await fetchWorkerState();
     } catch (error) {
       console.error('Unable to load history', error);
       handleRelayFailure('history', 'load chat history', lastStatus);
     }
-  }, [chat, accessCode, clearSystemNoticeKey, handleRelayFailure]);
+  }, [chat, accessCode, clearSystemNoticeKey, handleRelayFailure, fetchWorkerState]);
 
   useEffect(() => {
     fetchHistory();
@@ -397,6 +433,7 @@ export function App() {
         wsRef.current = null;
       }
       setSocketStatus('idle');
+      setWorkerState(createDefaultWorkerState());
       return;
     }
 
@@ -421,8 +458,19 @@ export function App() {
     };
     socket.onmessage = (event) => {
       try {
-        const payload: Message = JSON.parse(event.data as string);
-        handleAddMessage(payload);
+        const payload = JSON.parse(event.data as string);
+        if (payload?.type === 'workerState') {
+          if (!chat || payload.chatId !== chat.id) {
+            return;
+          }
+          setWorkerState({
+            state: (payload.state as WorkerStateValue) ?? 'idle',
+            detail: payload.detail ?? null,
+            updatedAt: payload.updatedAt ?? null
+          });
+          return;
+        }
+        handleAddMessage(payload as Message);
       } catch (error) {
         console.error('Invalid message payload', error);
       }
@@ -458,9 +506,9 @@ export function App() {
     setFormError(null);
     setMessages([]);
     messageIds.current.clear();
-    setAwaitingTerra(false);
     setLlmStatus('checking');
     setWorkerLastSeenAt(null);
+    setWorkerState(createDefaultWorkerState());
     clearAllSystemNoticeKeys();
     setChat({ id: generateChatId() });
   };
@@ -486,9 +534,9 @@ export function App() {
       const message: Message = await response.json();
       handleAddMessage(message);
       setMessageInput('');
-      setAwaitingTerra(true);
       setLastAckAt(new Date(message.createdAt));
       setFormError(null);
+      setWorkerState({ state: 'queued', detail: null, updatedAt: new Date().toISOString() });
       clearSystemNoticeKey('send');
     } catch (error) {
       console.error('Unable to send message', error);
@@ -537,6 +585,19 @@ export function App() {
     if (!workerLastSeenAt) return null;
     return `Terra checked in at ${formatter.format(workerLastSeenAt)}.`;
   }, [workerLastSeenAt]);
+  const workerStateMessage = useMemo(() => {
+    if (!chat) return null;
+    switch (workerState.state) {
+      case 'queued':
+        return 'Terra queued your message and will respond shortly.';
+      case 'processing':
+        return 'Terra is thinking through her response…';
+      case 'error':
+        return workerState.detail ?? 'Terra hit a snag. Give her a moment and try again.';
+      default:
+        return null;
+    }
+  }, [workerState, chat]);
   const lockStatuses = !accessCode.trim();
   const chainNodes = useMemo(() => {
     if (!lockStatuses) {
@@ -714,6 +775,7 @@ export function App() {
             <div className="status-row">
               {ackLabel && <span>{ackLabel}</span>}
               {heartbeatLabel && <span>{heartbeatLabel}</span>}
+              {workerStateMessage && <span>{workerStateMessage}</span>}
               {!terraReady && llmStatus === 'offline' && (
                 <span>Terra is waking up. Messages queue here until she reconnects.</span>
               )}

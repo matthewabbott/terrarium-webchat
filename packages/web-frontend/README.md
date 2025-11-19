@@ -2,7 +2,7 @@
 
 Vite + React scaffold for the mbabbott.com chat widget. The UI now talks directly to the REST relay instead of the old GraphQL stack—focus new work on the access-code flow, chat interface, and BYO-model entry points.
 
-The hero section surfaces `/api/health` data as a “chain” so visitors can see whether the relay, worker, terrarium-agent API, and vLLM inference server are online before they send their first message.
+The hero section surfaces `/api/health` data as a “chain” so visitors can see whether the relay, worker, terrarium-agent API, and vLLM inference server are online before they send their first message, and the chat log listens for `workerState` events so every visitor sees clear “Queued / Terra is thinking / Terra hit a snag” copy while their message is processed.
 
 ## Scripts
 - `npm run dev` – start Vite dev server (reads `.env`)

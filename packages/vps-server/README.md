@@ -10,11 +10,13 @@ Lightweight Express + WebSocket relay that runs on the VPS. It gates visitor acc
 | `GET` | `/api/chats/open` | `x-service-token` | Worker polls for chats needing attention. |
 | `POST` | `/api/chat/:chatId/agent` | `x-service-token` | Worker posts Terra’s reply. |
 | `POST` | `/api/worker/status` | `x-service-token` | Worker publishes terrarium-agent/vLLM health probes. |
+| `POST` | `/api/chat/:chatId/worker-state` | `x-service-token` | Worker reports per-chat queue/processing status. |
+| `GET` | `/api/chat/:chatId/worker-state` | access code or `x-service-token` | Fetch the latest worker state for a chat (UI fallback). |
 | `GET` | `/api/health` | access code in query | Relay + worker heartbeat status for the UI. |
-| `WS` | `/api/chat?chatId=…&accessCode=…` | access code in query | Live stream of chat messages. |
+| `WS` | `/api/chat?chatId=…&accessCode=…` | access code in query | Live stream of chat messages and worker-state events. |
 | `WS` | `/api/worker/updates` | `x-service-token` header | Push channel that pings the worker when a visitor posts a new message. |
 
-`GET /api/health` now returns a `chain` array describing each hop (frontend, relay, worker heartbeat, terrarium-agent API, vLLM). The worker keeps those entries fresh by POSTing to `/api/worker/status` whenever it pings the agent or completes a visitor prompt. Pair this with the `/api/worker/updates` WebSocket so the worker gets notified instantly when a visitor sends a gated message.
+`GET /api/health` now returns a `chain` array describing each hop (frontend, relay, worker heartbeat, terrarium-agent API, vLLM). The worker keeps those entries fresh by POSTing to `/api/worker/status` whenever it pings the agent or completes a visitor prompt. Pair this with the `/api/worker/updates` WebSocket so the worker gets notified instantly when a visitor sends a gated message, and use `/api/chat/:chatId/worker-state` so the UI can render “queued / thinking / error” copy for each chat without waiting for a health poll.
 
 ## Scripts
 - `npm run dev` – start the relay with `tsx` + hot reload
