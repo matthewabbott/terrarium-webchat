@@ -6,6 +6,8 @@ from typing import Any, Dict, List, Optional
 
 import httpx
 
+from .status import WorkerStatusReport
+
 
 class RelayClient:
     def __init__(self, *, api_base_url: str, service_token: str) -> None:
@@ -47,6 +49,14 @@ class RelayClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def post_worker_status(self, report: WorkerStatusReport) -> None:
+        response = await self._client.post(
+            f"{self.api_base_url}/api/worker/status",
+            headers=self._headers,
+            json=report.to_payload(),
+        )
+        response.raise_for_status()
 
     @property
     def _headers(self) -> Dict[str, str]:

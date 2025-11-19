@@ -12,10 +12,22 @@ type Message = {
   createdAt: string;
 };
 
+type StatusLevel = 'online' | 'degraded' | 'offline' | 'unknown';
+
+type ChainNode = {
+  id: 'frontend' | 'relay' | 'worker' | 'agent' | 'llm';
+  label: string;
+  status: StatusLevel;
+  detail: string | null;
+  checkedAt: string | null;
+  latencyMs?: number | null;
+};
+
 type HealthResponse = {
   relay: string;
   workerReady: boolean;
   workerLastSeenAt: string | null;
+  chain?: ChainNode[];
 };
 
 const formatter = new Intl.DateTimeFormat(undefined, {
@@ -24,6 +36,12 @@ const formatter = new Intl.DateTimeFormat(undefined, {
 });
 const HEALTH_POLL_INTERVAL_MS = 30_000;
 const CONNECT_PROMPT = 'Send your first message to connect with Terra';
+const STATUS_LABELS: Record<StatusLevel, string> = {
+  online: 'Online',
+  degraded: 'Degraded',
+  offline: 'Offline',
+  unknown: 'Unknown'
+};
 
 function describeRelayFailure(action: string, status: number | null): string {
   if (status === 401 || status === 403) {
@@ -69,6 +87,51 @@ function buildWsUrl(path: string, params: Record<string, string>): string {
   return url.toString();
 }
 
+const CHAIN_ORDER: ChainNode['id'][] = ['frontend', 'relay', 'worker', 'agent', 'llm'];
+
+const DEFAULT_CHAIN: ChainNode[] = [
+  { id: 'frontend', label: 'Frontend', status: 'online', detail: null, checkedAt: null },
+  { id: 'relay', label: 'Relay', status: 'online', detail: null, checkedAt: null },
+  { id: 'worker', label: 'Webchat worker', status: 'unknown', detail: 'Waiting for a heartbeat…', checkedAt: null },
+  { id: 'agent', label: 'terrarium-agent', status: 'unknown', detail: 'Waiting for worker status…', checkedAt: null },
+  { id: 'llm', label: 'vLLM', status: 'unknown', detail: 'Waiting for worker status…', checkedAt: null }
+];
+
+function createDefaultChain(): ChainNode[] {
+  return DEFAULT_CHAIN.map((node) => ({ ...node }));
+}
+
+function normalizeChain(chain?: ChainNode[] | null): ChainNode[] {
+  if (!chain?.length) {
+    return createDefaultChain();
+  }
+  const map = new Map(chain.map((node) => [node.id, node]));
+  return CHAIN_ORDER.map((id) => {
+    const fallback = DEFAULT_CHAIN.find((node) => node.id === id)!;
+    const override = map.get(id);
+    const merged = override ? { ...fallback, ...override } : { ...fallback };
+    return {
+      ...merged,
+      detail: merged.detail ?? null,
+      checkedAt: merged.checkedAt ?? null,
+      latencyMs: typeof merged.latencyMs === 'number' ? merged.latencyMs : null
+    };
+  });
+}
+
+function deriveLlmStatus(chain: ChainNode[]): 'ready' | 'offline' | 'checking' {
+  const workerNode = chain.find((node) => node.id === 'worker');
+  const agentNode = chain.find((node) => node.id === 'agent');
+  const llmNode = chain.find((node) => node.id === 'llm');
+  if ([workerNode, agentNode, llmNode].every((node) => node && node.status === 'online')) {
+    return 'ready';
+  }
+  if ([workerNode, agentNode, llmNode].some((node) => node?.status === 'offline')) {
+    return 'offline';
+  }
+  return 'checking';
+}
+
 function generateChatId(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) {
     return crypto.randomUUID();
@@ -90,6 +153,7 @@ export function App() {
   const [socketStatus, setSocketStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
   const [llmStatus, setLlmStatus] = useState<'idle' | 'checking' | 'ready' | 'offline'>('idle');
   const [workerLastSeenAt, setWorkerLastSeenAt] = useState<Date | null>(null);
+  const [statusChain, setStatusChain] = useState<ChainNode[]>(() => createDefaultChain());
   const [isDarkTheme, setIsDarkTheme] = useState(() => {
     const stored = localStorage.getItem('terra-theme');
     return stored === 'dark';
@@ -177,6 +241,7 @@ export function App() {
     setLastAckAt(null);
     setLlmStatus('idle');
     setWorkerLastSeenAt(null);
+    setStatusChain(createDefaultChain());
     setFormError(null);
     clearAllSystemNoticeKeys();
     if (wsRef.current) {
@@ -190,7 +255,7 @@ export function App() {
       setAwaitingTerra(false);
     }
     if (terraHasResponded) {
-      setLlmStatus('ready');
+      setLlmStatus((prev) => (prev === 'offline' ? 'offline' : 'ready'));
     }
   }, [awaitingTerra, terraHasResponded]);
 
@@ -246,6 +311,7 @@ export function App() {
     if (!chat?.id || !accessCode.trim()) {
       setLlmStatus('idle');
       setWorkerLastSeenAt(null);
+      setStatusChain(createDefaultChain());
       clearSystemNoticeKey('health');
       return;
     }
@@ -263,13 +329,28 @@ export function App() {
         const payload: HealthResponse = await response.json();
         if (cancelled) return;
         setWorkerLastSeenAt(payload.workerLastSeenAt ? new Date(payload.workerLastSeenAt) : null);
-        setLlmStatus(payload.workerReady ? 'ready' : 'offline');
+        const normalizedChain = normalizeChain(payload.chain);
+        setStatusChain(normalizedChain);
+        const derivedStatus = deriveLlmStatus(normalizedChain);
+        setLlmStatus((prev) => {
+          if (prev === 'ready' && derivedStatus !== 'offline') {
+            return 'ready';
+          }
+          return derivedStatus;
+        });
         clearSystemNoticeKey('health');
       } catch (error) {
         if (cancelled) return;
         console.error('Health check failed', error);
         setWorkerLastSeenAt(null);
         setLlmStatus((prev) => (prev === 'ready' ? prev : 'offline'));
+        setStatusChain(() =>
+          createDefaultChain().map((node) =>
+            node.id === 'worker'
+              ? { ...node, status: 'degraded', detail: 'Unable to refresh Terra’s status right now.' }
+              : node
+          )
+        );
         handleRelayFailure('health', 'check Terra’s status', lastStatus, { suppressFormError: true });
       }
     };
@@ -429,6 +510,7 @@ export function App() {
     if (!workerLastSeenAt) return null;
     return `Terra checked in at ${formatter.format(workerLastSeenAt)}.`;
   }, [workerLastSeenAt]);
+  const chainNodes = useMemo(() => statusChain, [statusChain]);
 
   return (
     <>
@@ -471,7 +553,25 @@ export function App() {
           </p>
           <p className="coming-soon">Coming soon: link(s) to about pages for my 'terrarium' projects.</p>
         </div>
-        <div className={`status-dot status-dot--${statusDotState}`}>{statusDotText}</div>
+        <div className="hero__status-cluster">
+          <div className={`status-dot status-dot--${statusDotState}`}>{statusDotText}</div>
+          <div className="status-chain" role="list" aria-label="Terra connection status">
+            {chainNodes.map((node, index) => (
+              <div key={node.id} className="status-chain__item">
+                <div className={`status-chain__node status-chain__node--${node.status}`} role="listitem">
+                  <div className="status-chain__label">{node.label}</div>
+                  <div className="status-chain__value">{STATUS_LABELS[node.status]}</div>
+                  {node.detail && <p>{node.detail}</p>}
+                  {!node.detail && node.checkedAt && <p>Updated {formatter.format(new Date(node.checkedAt))}</p>}
+                  {typeof node.latencyMs === 'number' && node.latencyMs >= 0 && (
+                    <p className="status-chain__latency">~{Math.round(node.latencyMs)} ms</p>
+                  )}
+                </div>
+                {index < chainNodes.length - 1 && <span className="status-chain__connector" aria-hidden="true" />}
+              </div>
+            ))}
+          </div>
+        </div>
       </header>
 
       <section className="terrarium-intro">

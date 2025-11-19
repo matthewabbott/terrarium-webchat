@@ -18,9 +18,26 @@ interface Message {
   createdAt: string;
 }
 
+type StatusLevel = 'online' | 'degraded' | 'offline' | 'unknown';
+
+interface ComponentStatus {
+  status: StatusLevel;
+  detail?: string | null;
+  checkedAt?: string | null;
+  latencyMs?: number | null;
+}
+
+interface WorkerStatusPayload {
+  agentApi: ComponentStatus;
+  llm: ComponentStatus;
+}
+
+type ChainNode = ComponentStatus & { id: string; label: string };
+
 const chats = new Map<string, Message[]>();
 const connections = new Map<string, Set<WebSocket>>();
 let lastWorkerSeenAt: number | null = null;
+let workerStatus: WorkerStatusPayload | null = null;
 
 const app = express();
 app.use(express.json());
@@ -114,6 +131,38 @@ apiRouter.get('/chats/open', (req: Request, res: Response) => {
   res.json({ chatIds: Array.from(chats.keys()) });
 });
 
+const validStatus: StatusLevel[] = ['online', 'degraded', 'offline', 'unknown'];
+
+function normalizeComponentStatus(input: unknown, fallbackDetail: string): ComponentStatus {
+  const payload = (typeof input === 'object' && input !== null ? input : {}) as Partial<ComponentStatus>;
+  const status = validStatus.includes((payload.status as StatusLevel) ?? 'unknown')
+    ? (payload.status as StatusLevel)
+    : 'unknown';
+  const detail =
+    typeof payload.detail === 'string' || payload.detail === null
+      ? payload.detail
+      : status === 'unknown'
+        ? fallbackDetail
+        : null;
+  const checkedAt = typeof payload.checkedAt === 'string' ? payload.checkedAt : null;
+  const latencyMs = typeof payload.latencyMs === 'number' ? payload.latencyMs : null;
+  return { status, detail, checkedAt, latencyMs };
+}
+
+apiRouter.post('/worker/status', (req: Request, res: Response) => {
+  const token = req.headers['x-service-token'];
+  if (token !== SERVICE_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const body = req.body as WorkerStatusPayload;
+  workerStatus = {
+    agentApi: normalizeComponentStatus(body?.agentApi, 'Awaiting agent health data'),
+    llm: normalizeComponentStatus(body?.llm, 'Awaiting LLM health data'),
+  };
+  recordWorkerHeartbeat();
+  return res.json({ ok: true });
+});
+
 apiRouter.get('/health', (req: Request, res: Response) => {
   const accessCode = (req.query.accessCode as string | undefined) ?? undefined;
   if (accessCode !== CHAT_PASSWORD) {
@@ -121,10 +170,40 @@ apiRouter.get('/health', (req: Request, res: Response) => {
   }
   const workerReady =
     lastWorkerSeenAt !== null ? Date.now() - lastWorkerSeenAt <= WORKER_STALE_THRESHOLD_MS : false;
+  const workerLastSeenIso = lastWorkerSeenAt ? new Date(lastWorkerSeenAt).toISOString() : null;
+  const nowIso = new Date().toISOString();
+  const workerDetail = workerReady
+    ? null
+    : workerLastSeenIso
+      ? 'Worker heartbeat expired'
+      : 'Worker has not checked in yet';
+  const statusChain: ChainNode[] = [
+    { id: 'frontend', label: 'Frontend', status: 'online', detail: null, checkedAt: nowIso },
+    { id: 'relay', label: 'Relay', status: 'online', detail: null, checkedAt: nowIso },
+    {
+      id: 'worker',
+      label: 'Webchat worker',
+      status: workerReady ? 'online' : 'offline',
+      detail: workerDetail,
+      checkedAt: workerLastSeenIso,
+    },
+    {
+      id: 'agent',
+      label: 'terrarium-agent',
+      ...(workerStatus?.agentApi ?? normalizeComponentStatus(null, 'Awaiting agent health data')),
+    },
+    {
+      id: 'llm',
+      label: 'vLLM',
+      ...(workerStatus?.llm ?? normalizeComponentStatus(null, 'Awaiting LLM health data')),
+    },
+  ];
   res.json({
     relay: 'ok',
     workerReady,
-    workerLastSeenAt: lastWorkerSeenAt ? new Date(lastWorkerSeenAt).toISOString() : null
+    workerLastSeenAt: workerLastSeenIso,
+    workerStatus,
+    chain: statusChain,
   });
 });
 

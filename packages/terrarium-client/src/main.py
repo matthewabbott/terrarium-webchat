@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 from dataclasses import dataclass
+from typing import Optional
 
 from rich.console import Console
 
@@ -24,6 +25,9 @@ class Settings:
     agent_api_url: str
     agent_model: str
     poll_interval: float
+    agent_health_url: Optional[str]
+    status_probe_interval: float
+    llm_probe_interval: float
 
 
 def load_settings() -> Settings:
@@ -32,6 +36,9 @@ def load_settings() -> Settings:
     agent_api_url = os.environ.get("AGENT_API_URL")
     agent_model = os.environ.get("AGENT_MODEL", "terra-webchat")
     poll_interval = float(os.environ.get("POLL_INTERVAL_SECONDS", "2"))
+    agent_health_url = os.environ.get("AGENT_HEALTH_URL")
+    status_probe_interval = float(os.environ.get("STATUS_POLL_INTERVAL_SECONDS", "30"))
+    llm_probe_interval = float(os.environ.get("LLM_STATUS_POLL_INTERVAL_SECONDS", "180"))
 
     missing = [name for name, value in {"API_BASE_URL": api_base_url, "SERVICE_TOKEN": service_token, "AGENT_API_URL": agent_api_url}.items() if not value]
     if missing:
@@ -43,6 +50,9 @@ def load_settings() -> Settings:
         agent_api_url=agent_api_url,
         agent_model=agent_model,
         poll_interval=poll_interval,
+        agent_health_url=agent_health_url,
+        status_probe_interval=status_probe_interval,
+        llm_probe_interval=llm_probe_interval,
     )
 
 
@@ -52,8 +62,18 @@ async def main() -> None:
 
     async with RelayClient(api_base_url=settings.api_base_url, service_token=settings.service_token) as relay_client:
         await relay_client.ping()
-        agent_client = AgentClient(api_url=settings.agent_api_url, model=settings.agent_model)
-        worker = TerrariumWorker(relay=relay_client, agent=agent_client, poll_interval=settings.poll_interval)
+        agent_client = AgentClient(
+            api_url=settings.agent_api_url,
+            model=settings.agent_model,
+            health_url=settings.agent_health_url,
+        )
+        worker = TerrariumWorker(
+            relay=relay_client,
+            agent=agent_client,
+            poll_interval=settings.poll_interval,
+            status_probe_interval=settings.status_probe_interval,
+            llm_probe_interval=settings.llm_probe_interval,
+        )
 
         try:
             await worker.run_forever()

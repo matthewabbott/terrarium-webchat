@@ -9,8 +9,11 @@ Lightweight Express + WebSocket relay that runs on the VPS. It gates visitor acc
 | `GET` | `/api/chat/:chatId/messages` | access code or `x-service-token` | Fetch chat transcript. |
 | `GET` | `/api/chats/open` | `x-service-token` | Worker polls for chats needing attention. |
 | `POST` | `/api/chat/:chatId/agent` | `x-service-token` | Worker posts Terra’s reply. |
+| `POST` | `/api/worker/status` | `x-service-token` | Worker publishes terrarium-agent/vLLM health probes. |
 | `GET` | `/api/health` | access code in query | Relay + worker heartbeat status for the UI. |
 | `WS` | `/api/chat?chatId=…&accessCode=…` | access code in query | Live stream of chat messages. |
+
+`GET /api/health` now returns a `chain` array describing each hop (frontend, relay, worker heartbeat, terrarium-agent API, vLLM). The worker keeps those entries fresh by POSTing to `/api/worker/status` whenever it pings the agent or completes a visitor prompt.
 
 ## Scripts
 - `npm run dev` – start the relay with `tsx` + hot reload
