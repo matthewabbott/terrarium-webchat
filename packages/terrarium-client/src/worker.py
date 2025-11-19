@@ -53,8 +53,8 @@ class TerrariumWorker:
     async def run_forever(self) -> None:
         logger.info("Worker started with poll interval %.1fs", self.poll_interval)
         self._status_task = asyncio.create_task(self._status_probe_loop())
+        self._queue_worker = asyncio.create_task(self._chat_queue_worker())
         if self.worker_updates_url:
-            self._queue_worker = asyncio.create_task(self._chat_queue_worker())
             self._worker_updates_task = asyncio.create_task(self._worker_updates_loop())
         try:
             while True:
@@ -75,7 +75,7 @@ class TerrariumWorker:
     async def tick(self) -> None:
         chats = await self.relay.fetch_open_chats()
         for chat in chats:
-            await self._process_chat(chat["id"])
+            self._enqueue_chat(chat["id"])
 
     async def _process_chat(self, chat_id: str) -> None:
         conversation = self._conversations.setdefault(chat_id, Conversation(chat_id=chat_id))
