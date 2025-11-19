@@ -1,4 +1,4 @@
-import { FocusEvent, FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 type Chat = {
   id: string;
@@ -210,24 +210,8 @@ export function App() {
     });
   }, []);
 
-  const handleChainMouseEnter = useCallback(() => {
-    setIsChainExpanded(true);
-  }, []);
-
-  const handleChainMouseLeave = useCallback(() => {
-    setIsChainExpanded(false);
-  }, []);
-
   const handleChainToggle = useCallback(() => {
     setIsChainExpanded((prev) => !prev);
-  }, []);
-
-  const handleChainBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
-    const nextFocus = event.relatedTarget as Node | null;
-    if (nextFocus && event.currentTarget.contains(nextFocus)) {
-      return;
-    }
-    setIsChainExpanded(false);
   }, []);
 
   const pushSystemNotice = useCallback(
@@ -628,8 +612,10 @@ export function App() {
           <p className="eyebrow">mbabbott.com / Terra</p>
           <h1>Terrarium webchat.</h1>
           <p className="subheading">
-            I call my DGX spark host a digital 'terrarium' for a large language model, which I call 'Terra'.
-            Terra does many things, and one of those things is chat with you here to convince you I am cool.
+            I call my DGX spark host a digital “terrarium” for a large language model named Terra. Terra does many
+            things, and one of those things is chat with you here to convince you I am cool.
+          </p>
+          <p className="hero-copy">
             If you don't know the secret password, DM me on{" "}
             <a
               href="https://www.linkedin.com/in/matthew-abbott-88390065/"
@@ -660,13 +646,7 @@ export function App() {
         </div>
         <div className="hero__status-cluster">
           <div className={`status-dot status-dot--${statusDotState}`}>{statusDotText}</div>
-          <div
-            className={`status-chain ${isChainExpanded ? 'status-chain--expanded' : ''}`}
-            onMouseEnter={handleChainMouseEnter}
-            onMouseLeave={handleChainMouseLeave}
-            onFocus={handleChainMouseEnter}
-            onBlur={handleChainBlur}
-          >
+          <div className={`status-chain ${isChainExpanded ? 'status-chain--expanded' : ''}`}>
             <button
               type="button"
               className="status-chain__toggle"
@@ -687,27 +667,28 @@ export function App() {
                 {isChainExpanded ? '▲' : '▼'}
               </span>
             </button>
-            <div
-              id={chainPanelId}
-              role="list"
-              className={`status-chain__panel ${isChainExpanded ? 'status-chain__panel--visible' : ''}`}
-              aria-label="Terra connection status"
-            >
-              {chainNodes.map((node, index) => (
-                <div key={node.id} className="status-chain__item">
-                  <div className={`status-chain__node status-chain__node--${node.status}`} role="listitem">
-                    <div className="status-chain__label">{node.label}</div>
-                    <div className="status-chain__value">{STATUS_LABELS[node.status]}</div>
-                    {node.detail && <p>{node.detail}</p>}
-                    {!node.detail && node.checkedAt && <p>Updated {formatter.format(new Date(node.checkedAt))}</p>}
-                    {typeof node.latencyMs === 'number' && node.latencyMs >= 0 && (
-                      <p className="status-chain__latency">~{Math.round(node.latencyMs)} ms</p>
-                    )}
-                  </div>
-                  {index < chainNodes.length - 1 && <span className="status-chain__connector" aria-hidden="true" />}
+            {isChainExpanded && (
+              <div id={chainPanelId} role="list" className="status-chain__panel" aria-label="Terra connection status">
+                <div className="status-chain__panel-line" role="presentation">
+                  {chainNodes.map((node, index) => (
+                    <div key={node.id} className="status-chain__panel-item">
+                      <div className={`status-chain__node status-chain__node--${node.status}`} role="listitem">
+                        <div className="status-chain__label">{node.label}</div>
+                        <div className="status-chain__value">{STATUS_LABELS[node.status]}</div>
+                        {node.detail && <p>{node.detail}</p>}
+                        {!node.detail && node.checkedAt && <p>Updated {formatter.format(new Date(node.checkedAt))}</p>}
+                        {typeof node.latencyMs === 'number' && node.latencyMs >= 0 && (
+                          <p className="status-chain__latency">~{Math.round(node.latencyMs)} ms</p>
+                        )}
+                      </div>
+                      {index < chainNodes.length - 1 && (
+                        <span className="status-chain__panel-connector" aria-hidden="true" />
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
           </div>
         </div>
       </header>
