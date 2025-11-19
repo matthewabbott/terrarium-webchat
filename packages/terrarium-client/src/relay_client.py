@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import httpx
 
@@ -28,7 +28,10 @@ class RelayClient:
         await self.fetch_open_chats()
 
     async def fetch_open_chats(self) -> List[Dict[str, Any]]:
-        response = await self._client.get(f"{self.api_base_url}/api/chats/open", headers=self._headers)
+        response = await self._client.get(
+            f"{self.api_base_url}/api/chats/open",
+            headers=self._headers,
+        )
         response.raise_for_status()
         payload = response.json()
         return [{"id": chat_id} for chat_id in payload.get("chatIds", [])]

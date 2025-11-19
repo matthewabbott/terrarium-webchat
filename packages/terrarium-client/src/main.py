@@ -55,7 +55,15 @@ def load_settings() -> Settings:
     worker_updates_url = os.environ.get("WORKER_WS_URL")
     worker_ws_retry = float(os.environ.get("WORKER_WS_RETRY_SECONDS", "5"))
 
-    missing = [name for name, value in {"API_BASE_URL": api_base_url, "SERVICE_TOKEN": service_token, "AGENT_API_URL": agent_api_url}.items() if not value]
+    missing = [
+        name
+        for name, value in {
+            "API_BASE_URL": api_base_url,
+            "SERVICE_TOKEN": service_token,
+            "AGENT_API_URL": agent_api_url,
+        }.items()
+        if not value
+    ]
     if missing:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
@@ -77,7 +85,10 @@ async def main() -> None:
     settings = load_settings()
     console.print(f"[bold cyan]Terrarium webchat worker[/] connected to {settings.api_base_url}")
 
-    async with RelayClient(api_base_url=settings.api_base_url, service_token=settings.service_token) as relay_client:
+    async with RelayClient(
+        api_base_url=settings.api_base_url,
+        service_token=settings.service_token,
+    ) as relay_client:
         await relay_client.ping()
         agent_client = AgentClient(
             api_url=settings.agent_api_url,

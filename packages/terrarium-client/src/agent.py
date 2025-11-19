@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from time import perf_counter
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import httpx

@@ -88,17 +88,29 @@ class TerrariumWorker:
             role = 'user' if message["sender"] == "Visitor" else 'assistant'
             conversation.ingest(role=role, content=message["content"], message_id=message["id"])
 
-        pending = [msg for msg in sorted_messages if msg["sender"] == "Visitor" and msg["id"] not in self._processed_message_ids]
+        pending = [
+            msg
+            for msg in sorted_messages
+            if msg["sender"] == "Visitor" and msg["id"] not in self._processed_message_ids
+        ]
         for visitor_message in pending:
             await self._handle_visitor_message(conversation, visitor_message)
             self._processed_message_ids.add(visitor_message["id"])
 
-    async def _handle_visitor_message(self, conversation: Conversation, message: Dict[str, str]) -> None:
+    async def _handle_visitor_message(
+        self,
+        conversation: Conversation,
+        message: Dict[str, str],
+    ) -> None:
         logger.info("Processing message %s for chat %s", message["id"], conversation.chat_id)
         conversation.prune(self.max_turns)
         try:
             response, latency_ms = await self.agent.generate(conversation)
-            self._llm_status.mark("online", detail="Responded to visitor message", latency_ms=latency_ms)
+            self._llm_status.mark(
+                "online",
+                detail="Responded to visitor message",
+                latency_ms=latency_ms,
+            )
         except AgentClientError as exc:
             logger.error("Agent generate failed: %s", exc)
             self._llm_status.mark("offline", detail=str(exc))
