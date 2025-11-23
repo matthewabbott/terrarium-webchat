@@ -16,3 +16,5 @@ __pycache__/
 .env.*
 !**/.env.example
 *.service.local
+packages/terrarium-client/content/
+packages/terrarium-client/content-local/

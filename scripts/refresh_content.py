@@ -17,11 +17,23 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
 
 DEFAULT_OWNER = "matthewabbott"
 MAX_FILE_BYTES = 100_000
+DEFAULT_WEB_PATHS = [
+    "",
+    "blog",
+    "personal-kb",
+    "terra",
+    "terrarium-server",
+    "dice",
+    "enchanting",
+    "oh-hell",
+    "semantic-search",
+]
 
 
 class TextExtractor(HTMLParser):
@@ -63,6 +75,21 @@ def html_to_text(html: str) -> str:
     return collapsed.strip()
 
 
+def fetch_url(url: str, token: Optional[str] = None) -> Optional[bytes]:
+    headers = {"User-Agent": "terrarium-cache/1.0"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = Request(url, headers=headers)
+    try:
+        with urlopen(request) as response:  # noqa: S310
+            return response.read()
+    except HTTPError as exc:
+        print(f"  ! Request failed {exc.code} for {url}")
+    except URLError as exc:
+        print(f"  ! Request failed for {url}: {exc.reason}")
+    return None
+
+
 def write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     trimmed = content[:MAX_FILE_BYTES]
@@ -88,8 +115,24 @@ def slug_for_path(site_root: Path, path: Path) -> str:
     return slug.lower()
 
 
-def cache_site(site_root: Path, content_dir: Path, max_depth: int) -> Dict[str, str]:
-    print(f"Caching site from {site_root}")
+def slug_for_web_path(path: str) -> str:
+    cleaned = path.strip("/")
+    if not cleaned:
+        return "index"
+    # Drop file extensions for simple slugs.
+    cleaned = cleaned.split(".")[0]
+    return cleaned.replace("/", "-") or "index"
+
+
+def cache_site(site_root: Path, content_dir: Path, max_depth: int, web_paths: List[str]) -> Dict[str, str]:
+    is_url = bool(urlparse(str(site_root)).scheme in {"http", "https"})
+    if is_url:
+        return cache_site_from_web(str(site_root), content_dir, web_paths)
+    return cache_site_from_files(site_root, content_dir, max_depth)
+
+
+def cache_site_from_files(site_root: Path, content_dir: Path, max_depth: int) -> Dict[str, str]:
+    print(f"Caching site from files at {site_root}")
     pages = discover_site_files(site_root, max_depth=max_depth)
     site_map: List[Dict[str, str]] = []
     for path in pages:
@@ -104,6 +147,28 @@ def cache_site(site_root: Path, content_dir: Path, max_depth: int) -> Dict[str, 
         write_text(target, text)
         site_map.append({"slug": slug, "path": str(path.relative_to(site_root))})
         print(f"  ✓ {slug} ({path}) -> {target}")
+
+    site_map_path = content_dir / "site_map.json"
+    site_map_path.write_text(json.dumps({"sections": site_map}, indent=2), encoding="utf-8")
+    print(f"Wrote site_map.json with {len(site_map)} entries")
+    return {"site_map": str(site_map_path)}
+
+
+def cache_site_from_web(base_url: str, content_dir: Path, paths: List[str]) -> Dict[str, str]:
+    print(f"Caching site from web at {base_url}")
+    site_map: List[Dict[str, str]] = []
+    for path in paths:
+        slug = slug_for_web_path(path)
+        url = urljoin(base_url.rstrip("/") + "/", path)
+        raw = fetch_url(url)
+        if raw is None:
+            print(f"  ! Skip {url}")
+            continue
+        text = html_to_text(raw.decode("utf-8", errors="ignore"))
+        target = content_dir / f"{slug}.txt"
+        write_text(target, text)
+        site_map.append({"slug": slug, "path": path or "/", "url": url})
+        print(f"  ✓ {slug} ({url}) -> {target}")
 
     site_map_path = content_dir / "site_map.json"
     site_map_path.write_text(json.dumps({"sections": site_map}, indent=2), encoding="utf-8")
@@ -232,19 +297,25 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument(
         "--content-dir",
         type=Path,
-        default=Path("packages/terrarium-client/content"),
+        default=Path("packages/terrarium-client/content-local"),
         help="Output directory for cached content",
     )
     parser.add_argument("--owner", default=DEFAULT_OWNER, help="GitHub owner to cache")
     parser.add_argument("--allowlist", help="Optional file with repo names to include (one per line)")
     parser.add_argument("--max-depth", type=int, default=2, help="Max path depth under site-root to cache")
+    parser.add_argument(
+        "--paths",
+        nargs="*",
+        default=DEFAULT_WEB_PATHS,
+        help="Paths (slugs) to fetch when site-root is a URL",
+    )
     args = parser.parse_args(argv)
 
     content_dir = args.content_dir
     content_dir.mkdir(parents=True, exist_ok=True)
 
     # Site cache
-    cache_site(args.site_root, content_dir, args.max_depth)
+    cache_site(args.site_root, content_dir, args.max_depth, args.paths)
 
     # GitHub cache
     token = os.environ.get("GITHUB_TOKEN")
