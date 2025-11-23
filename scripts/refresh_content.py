@@ -319,7 +319,7 @@ def normalize_base_url(base_url: str) -> str:
     parsed = urlparse(base_url)
     # Handle cases like "https:/example.com" or missing scheme/netloc
     if parsed.scheme and not parsed.netloc and parsed.path:
-        parsed = urlparse(f"{parsed.scheme}://{parsed.path}")
+        parsed = urlparse(f"{parsed.scheme}://{parsed.path.lstrip('/')}")
     if not parsed.scheme:
         parsed = urlparse(f"https://{base_url.lstrip('/')}")
     if not parsed.netloc:
