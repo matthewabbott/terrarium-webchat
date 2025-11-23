@@ -7,11 +7,51 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlparse
 
 import httpx
+from html.parser import HTMLParser
 
 
 ToolDefinition = Dict[str, Any]
+
+
+class _TextExtractor(HTMLParser):
+    """Lightweight HTML-to-text extractor used by live fetch."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.parts: List[str] = []
+        self._skip = False
+
+    def handle_starttag(self, tag: str, attrs: List[tuple[str, str]]) -> None:  # noqa: ARG002
+        if tag in {"script", "style"}:
+            self._skip = True
+        if tag in {"p", "br", "div", "section", "li", "h1", "h2", "h3", "h4"}:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"script", "style"}:
+            self._skip = False
+        if tag in {"p", "div", "section", "li"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        if self._skip:
+            return
+        text = data.strip()
+        if text:
+            self.parts.append(text + " ")
+
+    def get_text(self) -> str:
+        return "".join(self.parts)
+
+
+def _html_to_text(html: str) -> str:
+    parser = _TextExtractor()
+    parser.feed(html)
+    collapsed = " ".join(parser.get_text().split())
+    return collapsed.strip()
 
 
 TOOL_DEFINITIONS: List[ToolDefinition] = [
@@ -104,6 +144,78 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_github_repos",
+            "description": "List cached public GitHub repos for matthewabbott with metadata.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_github_repo",
+            "description": "Fetch cached README or a specific cached file from a GitHub repo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Repository name (without owner)."},
+                    "file": {
+                        "type": "string",
+                        "description": "Optional path within the cached repo (default README.md).",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_github_repos",
+            "description": "List cached public GitHub repos for matthewabbott with metadata.",
+            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_github_repo",
+            "description": "Fetch cached README or a specific cached file from a GitHub repo.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Repository name (without owner)."},
+                    "file": {
+                        "type": "string",
+                        "description": "Optional path within the cached repo (default README.md).",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_live_page",
+            "description": "Fetch a live mbabbott.com page (guarded) and return stripped text.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slug_or_url": {
+                        "type": "string",
+                        "description": "Slug like 'projects' or full mbabbott.com URL.",
+                    }
+                },
+                "required": ["slug_or_url"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -116,6 +228,10 @@ class ToolExecutor:
     site_map_file: Optional[Path] = None
     search_api_url: Optional[str] = None
     search_api_key: Optional[str] = None
+    github_dir: Path
+    github_owner: str = "matthewabbott"
+    live_site_base_url: str
+    live_allowed_hosts: List[str]
 
     def __init__(
         self,
@@ -124,6 +240,10 @@ class ToolExecutor:
         site_map_file: Optional[Path] = None,
         search_api_url: Optional[str] = None,
         search_api_key: Optional[str] = None,
+        github_dir: Optional[Path] = None,
+        github_owner: str = "matthewabbott",
+        live_site_base_url: Optional[str] = None,
+        live_allowed_hosts: Optional[List[str]] = None,
     ) -> None:
         base_dir = Path(__file__).resolve().parent.parent / "content"
         self.content_dir = content_dir or base_dir
@@ -131,6 +251,12 @@ class ToolExecutor:
         self.site_map_file = site_map_file
         self.search_api_url = search_api_url or os.environ.get("SEARCH_API_URL")
         self.search_api_key = search_api_key or os.environ.get("SEARCH_API_KEY")
+        self.github_dir = github_dir or (self.content_dir / "github")
+        self.github_owner = github_owner
+        self.live_site_base_url = live_site_base_url or os.environ.get("LIVE_SITE_BASE_URL") or "https://mbabbott.com"
+        allowed = live_allowed_hosts or (os.environ.get("LIVE_ALLOWED_HOSTS") or "").split(",")
+        default_hosts = ["mbabbott.com", "www.mbabbott.com"]
+        self.live_allowed_hosts = [h.strip() for h in allowed if h.strip()] or default_hosts
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         if tool_name == "get_site_map":
@@ -147,6 +273,12 @@ class ToolExecutor:
             return self._get_project_details(arguments)
         if tool_name == "search_web":
             return await self._search_web(arguments)
+        if tool_name == "list_github_repos":
+            return self._list_github_repos()
+        if tool_name == "get_github_repo":
+            return self._get_github_repo(arguments)
+        if tool_name == "fetch_live_page":
+            return await self._fetch_live_page(arguments)
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
     def _read_json_file(self, path: Optional[Path]) -> Optional[Dict[str, Any]]:
@@ -220,6 +352,62 @@ class ToolExecutor:
             if isinstance(project, dict) and project.get("name", "").lower() == name:
                 return json.dumps(project)
         return json.dumps({"error": f"Project not found: {name or 'unspecified'}"})
+
+    def _list_github_repos(self) -> str:
+        repos_path = self.github_dir / "repos.json"
+        data = self._read_json_file(repos_path) or {"repos": []}
+        return json.dumps(data)
+
+    def _get_github_repo(self, arguments: Dict[str, Any]) -> str:
+        name = (arguments.get("name") or "").strip().lower()
+        file_arg = (arguments.get("file") or "").strip()
+        if not name:
+            return json.dumps({"error": "name is required"})
+
+        repo_root = self.github_dir / self.github_owner / name
+        if not repo_root.exists():
+            return json.dumps({"error": f"Repo not cached: {name}"})
+
+        target_file = file_arg or "README.md"
+        # Prevent path traversal by resolving within repo_root.
+        resolved = (repo_root / target_file).resolve()
+        if repo_root not in resolved.parents and repo_root != resolved:
+            return json.dumps({"error": "Invalid file path"})
+        if not resolved.exists():
+            return json.dumps({"error": f"File not cached: {target_file}"})
+
+        try:
+            content = resolved.read_text(encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - defensive
+            return json.dumps({"error": f"Unable to read file: {exc}"})
+
+        return json.dumps({"repo": name, "file": target_file, "content": content[:100_000]})
+
+    async def _fetch_live_page(self, arguments: Dict[str, Any]) -> str:
+        slug = (arguments.get("slug_or_url") or "").strip()
+        if not slug:
+            return json.dumps({"error": "slug_or_url is required"})
+
+        url = slug
+        if not slug.startswith("http://") and not slug.startswith("https://"):
+            url = urljoin(self.live_site_base_url.rstrip("/") + "/", slug)
+
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+        if host.lower() not in {h.lower() for h in self.live_allowed_hosts}:
+            return json.dumps({"error": "Host not allowed for live fetch", "allowed_hosts": self.live_allowed_hosts})
+
+        try:
+            async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+                response = await client.get(url)
+                response.raise_for_status()
+                raw = response.content[:200_000]
+        except Exception as exc:  # noqa: BLE001
+            fallback = json.loads(self._fetch_site_page({"slug_or_url": slug}))
+            return json.dumps({"error": f"Live fetch failed: {exc}", "cached": fallback})
+
+        text = _html_to_text(raw.decode("utf-8", errors="ignore"))
+        return json.dumps({"url": url, "content": text[:100_000]})
 
     async def _search_web(self, arguments: Dict[str, Any]) -> str:
         if not self.search_api_url:
