@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse, urlunparse
+from collections import deque
 from urllib.request import Request, urlopen
 
 
@@ -126,7 +127,7 @@ def slug_for_web_path(path: str) -> str:
 
 def load_env_token() -> Optional[str]:
     """Prefer GITHUB_TOKEN env; fall back to worker .env if present."""
-    token = load_env_token()
+    token = os.environ.get("GITHUB_TOKEN")
     if token:
         return token
     env_path = Path("packages/terrarium-client/.env")
@@ -145,11 +146,19 @@ def load_env_token() -> Optional[str]:
     return None
 
 
-def cache_site(site_root: Path | str, content_dir: Path, max_depth: int, web_paths: List[str]) -> Dict[str, str]:
+def cache_site(
+    site_root: Path | str,
+    content_dir: Path,
+    max_depth: int,
+    web_paths: List[str],
+    *,
+    crawl: bool = False,
+    crawl_depth: int = 2,
+) -> Dict[str, str]:
     parsed = urlparse(str(site_root))
     is_url = parsed.scheme in {"http", "https"}
     if is_url:
-        return cache_site_from_web(str(site_root), content_dir, web_paths)
+        return cache_site_from_web(str(site_root), content_dir, web_paths, crawl=crawl, crawl_depth=crawl_depth)
     return cache_site_from_files(Path(site_root), content_dir, max_depth)
 
 
@@ -176,10 +185,13 @@ def cache_site_from_files(site_root: Path, content_dir: Path, max_depth: int) ->
     return {"site_map": str(site_map_path)}
 
 
-def cache_site_from_web(base_url: str, content_dir: Path, paths: List[str]) -> Dict[str, str]:
+def cache_site_from_web(base_url: str, content_dir: Path, paths: List[str], *, crawl: bool = False, crawl_depth: int = 2) -> Dict[str, str]:
     base_url = normalize_base_url(base_url)
     print(f"Caching site from web at {base_url}")
     site_map: List[Dict[str, str]] = []
+    if crawl:
+        discovered = discover_links(base_url, max_depth=crawl_depth)
+        paths = list({*paths, *discovered})
     for path in paths:
         slug = slug_for_web_path(path)
         url = urljoin(base_url, path.lstrip("/"))
@@ -197,6 +209,55 @@ def cache_site_from_web(base_url: str, content_dir: Path, paths: List[str]) -> D
     site_map_path.write_text(json.dumps({"sections": site_map}, indent=2), encoding="utf-8")
     print(f"Wrote site_map.json with {len(site_map)} entries")
     return {"site_map": str(site_map_path)}
+
+
+def discover_links(base_url: str, max_depth: int = 2) -> List[str]:
+    """Crawl same-host links starting from base_url and return relative paths."""
+    allowed_host = urlparse(base_url).hostname or ""
+    seen: set[str] = set()
+    queue: deque[tuple[str, int]] = deque()
+    queue.append((base_url, 0))
+    collected: set[str] = set()
+
+    class LinkParser(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__()
+            self.links: List[str] = []
+
+        def handle_starttag(self, tag: str, attrs: List[tuple[str, str]]) -> None:  # noqa: ARG002
+            if tag != "a":
+                return
+            href = dict(attrs).get("href")
+            if href:
+                self.links.append(href)
+
+    while queue:
+        url, depth = queue.popleft()
+        if url in seen or depth > max_depth:
+            continue
+        seen.add(url)
+        raw = fetch_url(url)
+        if raw is None:
+            continue
+        collected.add(urlparse(url).path or "/")
+        if depth == max_depth:
+            continue
+        parser = LinkParser()
+        try:
+            parser.feed(raw.decode("utf-8", errors="ignore"))
+        except Exception:
+            continue
+        for href in parser.links:
+            parsed = urlparse(urljoin(url, href))
+            if parsed.scheme not in {"http", "https"}:
+                continue
+            if (parsed.hostname or "").lower() != allowed_host.lower():
+                continue
+            normalized = urlunparse((parsed.scheme, parsed.netloc, parsed.path, "", "", ""))
+            queue.append((normalized, depth + 1))
+
+    # Return unique paths (without scheme/host)
+    return list({path.strip("/") for path in collected})
 
 
 def github_request(url: str, token: Optional[str]) -> Optional[bytes]:
@@ -345,13 +406,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         default=DEFAULT_WEB_PATHS,
         help="Paths (slugs) to fetch when site-root is a URL",
     )
+    parser.add_argument("--crawl", action="store_true", help="Crawl same-host links starting at site-root")
+    parser.add_argument("--crawl-depth", type=int, default=2, help="Max crawl depth when --crawl is set")
     args = parser.parse_args(argv)
 
     content_dir = args.content_dir
     content_dir.mkdir(parents=True, exist_ok=True)
 
     # Site cache
-    cache_site(args.site_root, content_dir, args.max_depth, args.paths)
+    cache_site(
+        args.site_root,
+        content_dir,
+        args.max_depth,
+        args.paths,
+        crawl=args.crawl,
+        crawl_depth=args.crawl_depth,
+    )
 
     # GitHub cache
     token = load_env_token()
