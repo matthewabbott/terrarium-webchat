@@ -9,6 +9,7 @@ Lightweight Express + WebSocket relay that runs on the VPS. It gates visitor acc
 | `GET` | `/api/chat/:chatId/messages` | access code or `x-service-token` | Fetch chat transcript. |
 | `GET` | `/api/chats/open` | `x-service-token` | Worker polls for chats needing attention. |
 | `POST` | `/api/chat/:chatId/agent` | `x-service-token` | Worker posts Terra’s reply. |
+| `POST` | `/api/chat/:chatId/agent-chunk` | `x-service-token` | Worker streams partial assistant content (not persisted). |
 | `POST` | `/api/worker/status` | `x-service-token` | Worker publishes terrarium-agent/vLLM health probes. |
 | `POST` | `/api/chat/:chatId/worker-state` | `x-service-token` | Worker reports per-chat queue/processing status. |
 | `GET` | `/api/chat/:chatId/worker-state` | access code or `x-service-token` | Fetch the latest worker state for a chat (UI fallback). |

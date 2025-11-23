@@ -49,6 +49,14 @@ interface WorkerStatePayload {
   updatedAt: string;
 }
 
+type AssistantChunkPayload = {
+  type: 'assistantChunk';
+  chatId: string;
+  content: string;
+  done?: boolean;
+  emittedAt: string;
+};
+
 const chats = new Map<string, Message[]>();
 const connections = new Map<string, Set<WebSocket>>();
 let lastWorkerSeenAt: number | null = null;
@@ -130,6 +138,24 @@ function broadcastWorkerState(chatId: string, payload: WorkerStatePayload) {
   }
 }
 
+function broadcastAssistantChunk(chatId: string, content: string, done: boolean) {
+  const sockets = connections.get(chatId);
+  if (!sockets) return;
+  const payload: AssistantChunkPayload = {
+    type: 'assistantChunk',
+    chatId,
+    content,
+    done,
+    emittedAt: new Date().toISOString()
+  };
+  const serialized = JSON.stringify(payload);
+  for (const socket of sockets) {
+    if (socket.readyState === WebSocket.OPEN) {
+      socket.send(serialized);
+    }
+  }
+}
+
 apiRouter.post('/chat/:chatId/messages', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const { content, accessCode } = req.body as { content?: string; accessCode?: string };
@@ -192,6 +218,21 @@ apiRouter.post('/chat/:chatId/agent', (req: Request, res: Response) => {
   ensureChat(chatId).push(message);
   broadcast(chatId, message);
   res.json(message);
+});
+
+apiRouter.post('/chat/:chatId/agent-chunk', (req: Request, res: Response) => {
+  const { chatId } = req.params;
+  const token = req.headers['x-service-token'];
+  if (token !== SERVICE_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  recordWorkerHeartbeat();
+  const { content, done } = req.body as { content?: string; done?: boolean };
+  if (typeof content !== 'string') {
+    return res.status(400).json({ error: 'Chunk content required' });
+  }
+  broadcastAssistantChunk(chatId, content, Boolean(done));
+  res.json({ ok: true });
 });
 
 apiRouter.get('/chats/open', (req: Request, res: Response) => {

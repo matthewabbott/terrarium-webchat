@@ -38,6 +38,14 @@ type WorkerState = {
   updatedAt: string | null;
 };
 
+type AssistantChunkEvent = {
+  type: 'assistantChunk';
+  chatId: string;
+  content: string;
+  done?: boolean;
+  emittedAt: string;
+};
+
 const formatter = new Intl.DateTimeFormat(undefined, {
   hour: '2-digit',
   minute: '2-digit'
@@ -165,6 +173,8 @@ export function App() {
   const [messageInput, setMessageInput] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [workerState, setWorkerState] = useState<WorkerState>(() => createDefaultWorkerState());
+  const [assistantStream, setAssistantStream] = useState('');
+  const [assistantStreaming, setAssistantStreaming] = useState(false);
   const [lastAckAt, setLastAckAt] = useState<Date | null>(null);
   const [socketStatus, setSocketStatus] = useState<'idle' | 'connecting' | 'connected' | 'error'>('idle');
   const [llmStatus, setLlmStatus] = useState<'idle' | 'checking' | 'ready' | 'offline'>('idle');
@@ -206,7 +216,12 @@ export function App() {
         return prev;
       }
       messageIds.current.add(msg.id);
-      return [...prev, msg].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      const next = [...prev, msg].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      if (msg.sender === 'Terra') {
+        setAssistantStream('');
+        setAssistantStreaming(false);
+      }
+      return next;
     });
   }, []);
 
@@ -260,6 +275,8 @@ export function App() {
     setChat(null);
     setMessages([]);
     messageIds.current.clear();
+    setAssistantStream('');
+    setAssistantStreaming(false);
     setLastAckAt(null);
     setLlmStatus('idle');
     setWorkerLastSeenAt(null);
@@ -452,6 +469,15 @@ export function App() {
             detail: payload.detail ?? null,
             updatedAt: payload.updatedAt ?? null
           });
+          return;
+        }
+        if ((payload as AssistantChunkEvent)?.type === 'assistantChunk') {
+          const chunk = payload as AssistantChunkEvent;
+          if (!chat || chunk.chatId !== chat.id) {
+            return;
+          }
+          setAssistantStreaming(!chunk.done);
+          setAssistantStream((prev) => (chunk.done ? '' : `${prev}${chunk.content}`));
           return;
         }
         handleAddMessage(payload as Message);
@@ -739,6 +765,12 @@ export function App() {
                 </div>
               )}
             </div>
+            {assistantStreaming && assistantStream && (
+              <div className="assistant-stream" aria-live="polite">
+                <div className="assistant-stream__label">Terra is thinking…</div>
+                <div className="assistant-stream__body">{assistantStream}</div>
+              </div>
+            )}
             <form className="composer" onSubmit={handleSendMessage}>
               <textarea
                 ref={textareaRef}
