@@ -124,6 +124,27 @@ def slug_for_web_path(path: str) -> str:
     return cleaned.replace("/", "-") or "index"
 
 
+def load_env_token() -> Optional[str]:
+    """Prefer GITHUB_TOKEN env; fall back to worker .env if present."""
+    token = load_env_token()
+    if token:
+        return token
+    env_path = Path("packages/terrarium-client/.env")
+    if not env_path.exists():
+        return None
+    try:
+        for line in env_path.read_text().splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            if stripped.startswith("GITHUB_TOKEN="):
+                _, value = stripped.split("=", 1)
+                return value.strip()
+    except Exception:
+        return None
+    return None
+
+
 def cache_site(site_root: Path, content_dir: Path, max_depth: int, web_paths: List[str]) -> Dict[str, str]:
     is_url = bool(urlparse(str(site_root)).scheme in {"http", "https"})
     if is_url:
