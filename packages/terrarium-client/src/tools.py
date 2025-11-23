@@ -174,33 +174,6 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
     {
         "type": "function",
         "function": {
-            "name": "list_github_repos",
-            "description": "List cached public GitHub repos for matthewabbott with metadata.",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_github_repo",
-            "description": "Fetch cached README or a specific cached file from a GitHub repo.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Repository name (without owner)."},
-                    "file": {
-                        "type": "string",
-                        "description": "Optional path within the cached repo (default README.md).",
-                    },
-                },
-                "required": ["name"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "fetch_live_page",
             "description": "Fetch a live mbabbott.com page (guarded) and return stripped text.",
             "parameters": {
