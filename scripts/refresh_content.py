@@ -17,7 +17,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 from urllib.request import Request, urlopen
 
 
@@ -176,11 +176,12 @@ def cache_site_from_files(site_root: Path, content_dir: Path, max_depth: int) ->
 
 
 def cache_site_from_web(base_url: str, content_dir: Path, paths: List[str]) -> Dict[str, str]:
+    base_url = normalize_base_url(base_url)
     print(f"Caching site from web at {base_url}")
     site_map: List[Dict[str, str]] = []
     for path in paths:
         slug = slug_for_web_path(path)
-        url = urljoin(base_url.rstrip("/") + "/", path)
+        url = urljoin(base_url, path.lstrip("/"))
         raw = fetch_url(url)
         if raw is None:
             print(f"  ! Skip {url}")
@@ -312,6 +313,19 @@ def load_allowlist(path: Optional[str]) -> Optional[List[str]]:
     return names or None
 
 
+def normalize_base_url(base_url: str) -> str:
+    """Ensure base URL has scheme and netloc for urljoin."""
+    parsed = urlparse(base_url)
+    # Handle cases like "https:/example.com" or missing scheme/netloc
+    if parsed.scheme and not parsed.netloc and parsed.path:
+        parsed = urlparse(f"{parsed.scheme}://{parsed.path}")
+    if not parsed.scheme:
+        parsed = urlparse(f"https://{base_url.lstrip('/')}")
+    if not parsed.netloc:
+        raise ValueError(f"Invalid site-root, missing host: {base_url}")
+    return urlunparse((parsed.scheme, parsed.netloc, "/", "", "", ""))
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Refresh cached site and GitHub content")
     parser.add_argument("--site-root", type=Path, default=Path("/var/www/html"), help="Root of the deployed site")
@@ -339,7 +353,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     cache_site(args.site_root, content_dir, args.max_depth, args.paths)
 
     # GitHub cache
-    token = os.environ.get("GITHUB_TOKEN")
+    token = load_env_token()
     allowlist = load_allowlist(args.allowlist)
     cache_github(args.owner, content_dir, allowlist, token)
 
