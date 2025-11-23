@@ -145,11 +145,12 @@ def load_env_token() -> Optional[str]:
     return None
 
 
-def cache_site(site_root: Path, content_dir: Path, max_depth: int, web_paths: List[str]) -> Dict[str, str]:
-    is_url = bool(urlparse(str(site_root)).scheme in {"http", "https"})
+def cache_site(site_root: Path | str, content_dir: Path, max_depth: int, web_paths: List[str]) -> Dict[str, str]:
+    parsed = urlparse(str(site_root))
+    is_url = parsed.scheme in {"http", "https"}
     if is_url:
         return cache_site_from_web(str(site_root), content_dir, web_paths)
-    return cache_site_from_files(site_root, content_dir, max_depth)
+    return cache_site_from_files(Path(site_root), content_dir, max_depth)
 
 
 def cache_site_from_files(site_root: Path, content_dir: Path, max_depth: int) -> Dict[str, str]:
@@ -328,7 +329,7 @@ def normalize_base_url(base_url: str) -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Refresh cached site and GitHub content")
-    parser.add_argument("--site-root", type=Path, default=Path("/var/www/html"), help="Root of the deployed site")
+    parser.add_argument("--site-root", default="/var/www/html", help="Root of the deployed site (file path or URL)")
     parser.add_argument(
         "--content-dir",
         type=Path,
