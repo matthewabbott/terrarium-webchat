@@ -14,6 +14,8 @@ from websockets.client import connect as ws_connect
 from .agent import AgentClient, AgentClientError
 from .context import Conversation
 from .relay_client import RelayClient
+from .tools import TOOL_DEFINITIONS, ToolExecutor
+from .prompt import WEBCHAT_SYSTEM_PROMPT
 from .status import ComponentStatus, WorkerStatusReport
 
 logger = logging.getLogger(__name__)
@@ -27,6 +29,7 @@ class TerrariumWorker:
         agent: AgentClient,
         poll_interval: float = 2.0,
         max_turns: int = 16,
+        max_tool_iterations: int = 8,
         status_probe_interval: float = 30.0,
         llm_probe_interval: float = 180.0,
         worker_updates_url: Optional[str] = None,
@@ -36,6 +39,7 @@ class TerrariumWorker:
         self.agent = agent
         self.poll_interval = poll_interval
         self.max_turns = max_turns
+        self.max_tool_iterations = max_tool_iterations
         self.status_probe_interval = status_probe_interval
         self.llm_probe_interval = llm_probe_interval
         self.worker_updates_url = worker_updates_url
@@ -49,6 +53,7 @@ class TerrariumWorker:
         self._queue_worker: Optional[asyncio.Task[None]] = None
         self._chat_queue: asyncio.Queue[str] = asyncio.Queue()
         self._pending_chat_ids: set[str] = set()
+        self._tool_executor = ToolExecutor()
 
     async def run_forever(self) -> None:
         logger.info("Worker started with poll interval %.1fs", self.poll_interval)
@@ -108,7 +113,7 @@ class TerrariumWorker:
         worker_state = "responded"
         worker_state_detail: Optional[str] = None
         try:
-            response, latency_ms = await self.agent.generate(conversation)
+            response, latency_ms = await self._run_tool_loop(conversation)
             self._llm_status.mark(
                 "online",
                 detail="Responded to visitor message",
@@ -128,6 +133,7 @@ class TerrariumWorker:
             worker_state_detail = str(exc)
         conversation.add_turn("assistant", response)
         await self.relay.post_agent_message(conversation.chat_id, response)
+        await self._publish_chunk(conversation.chat_id, "", done=True)
         await self._update_worker_state(conversation.chat_id, worker_state, worker_state_detail)
         await self._publish_status()
 
@@ -211,3 +217,57 @@ class TerrariumWorker:
             await self.relay.post_worker_state(chat_id, state, detail)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Unable to update worker state: %s", exc)
+
+    async def _run_tool_loop(self, conversation: Conversation) -> tuple[str, float]:
+        messages = conversation.to_prompt_messages(system_prompt=self.agent.system_prompt, max_turns=self.max_turns)
+        last_latency_ms = 0.0
+
+        async def on_chunk(chunk: str) -> None:
+            await self._publish_chunk(conversation.chat_id, chunk, done=False)
+
+        for iteration in range(self.max_tool_iterations):
+            response_message, latency_ms = await self.agent.chat(
+                messages=messages,
+                tools=TOOL_DEFINITIONS,
+                stream=True,
+                on_chunk=on_chunk,
+            )
+            last_latency_ms = latency_ms
+            tool_calls = response_message.get("tool_calls") or []
+            if tool_calls:
+                # Save assistant turn (tool calls may not have content)
+                conversation.add_turn("assistant", response_message.get("content", ""))
+                messages.append(response_message)
+                for call in tool_calls:
+                    tool_name = call.get("function", {}).get("name", "")
+                    args_raw = call.get("function", {}).get("arguments", "") or "{}"
+                    tool_id = call.get("id") or "tool_call"
+                    try:
+                        args = json.loads(args_raw)
+                    except json.JSONDecodeError:
+                        args = {}
+                    result = await self._tool_executor.execute(tool_name, args)
+                    tool_result_message = {
+                        "role": "tool",
+                        "tool_call_id": tool_id,
+                        "name": tool_name,
+                        "content": result,
+                    }
+                    messages.append(tool_result_message)
+                    conversation.add_turn("tool", result)
+                continue
+
+            content = response_message.get("content", "") or ""
+            if not content:
+                raise AgentClientError("Terrarium agent returned an empty response")
+            return content, last_latency_ms
+
+        raise AgentClientError("Reached max tool iterations without a response")
+
+    async def _publish_chunk(self, chat_id: str, content: str, *, done: bool) -> None:
+        if not content and not done:
+            return
+        try:
+            await self.relay.post_agent_chunk(chat_id, content=content, done=done)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Unable to publish chunk for chat %s: %s", chat_id, exc)

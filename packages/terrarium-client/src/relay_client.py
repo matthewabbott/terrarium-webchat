@@ -53,6 +53,14 @@ class RelayClient:
         response.raise_for_status()
         return response.json()
 
+    async def post_agent_chunk(self, chat_id: str, content: str, done: bool = False) -> None:
+        response = await self._client.post(
+            f"{self.api_base_url}/api/chat/{chat_id}/agent-chunk",
+            headers=self._headers,
+            json={"content": content, "done": done},
+        )
+        response.raise_for_status()
+
     async def post_worker_status(self, report: WorkerStatusReport) -> None:
         response = await self._client.post(
             f"{self.api_base_url}/api/worker/status",

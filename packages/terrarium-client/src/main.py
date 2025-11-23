@@ -14,6 +14,7 @@ from rich.console import Console
 from .agent import AgentClient
 from .relay_client import RelayClient
 from .worker import TerrariumWorker
+from .prompt import WEBCHAT_SYSTEM_PROMPT
 
 console = Console()
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
@@ -94,6 +95,7 @@ async def main() -> None:
             api_url=settings.agent_api_url,
             model=settings.agent_model,
             health_url=settings.agent_health_url,
+            system_prompt=WEBCHAT_SYSTEM_PROMPT,
         )
         worker = TerrariumWorker(
             relay=relay_client,
