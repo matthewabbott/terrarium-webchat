@@ -12,6 +12,7 @@ const PORT = Number(process.env.PORT ?? 4100);
 const BASE_PATH = (process.env.BASE_PATH ?? '').replace(/\/$/, '');
 const WORKER_STALE_THRESHOLD_MS = Number(process.env.WORKER_STALE_THRESHOLD_MS ?? 60_000);
 const LOG_DIR = process.env.LOG_DIR ?? path.join(process.cwd(), 'chat-logs');
+const LOG_ASSISTANT_CHUNKS = (process.env.LOG_ASSISTANT_CHUNKS ?? 'false').toLowerCase() === 'true';
 mkdirSync(LOG_DIR, { recursive: true });
 
 interface Message {
@@ -253,7 +254,7 @@ apiRouter.post('/chat/:chatId/agent-chunk', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Chunk content required' });
   }
   broadcastAssistantChunk(chatId, content, Boolean(done));
-  if (content) {
+  if (content && LOG_ASSISTANT_CHUNKS) {
     logEvent(chatId, 'assistant_chunk', { content, done: Boolean(done) });
   }
   res.json({ ok: true });

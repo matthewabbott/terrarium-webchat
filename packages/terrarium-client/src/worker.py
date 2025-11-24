@@ -55,6 +55,7 @@ class TerrariumWorker:
         poll_interval: float = 2.0,
         poll_while_ws_connected: bool = True,
         chat_log_dir: str = "chat-logs",
+        log_assistant_chunks: bool = False,
         max_turns: int = 16,
         max_tool_iterations: int = 8,
         status_probe_interval: float = 30.0,
@@ -84,6 +85,7 @@ class TerrariumWorker:
         self._tool_executor = ToolExecutor()
         self._ws_connected: bool = False
         self._logger = ChatLogger(Path(chat_log_dir))
+        self._log_assistant_chunks = log_assistant_chunks
 
     async def run_forever(self) -> None:
         logger.info("Worker started with poll interval %.1fs", self.poll_interval)
@@ -335,7 +337,7 @@ class TerrariumWorker:
         if not content and not done:
             return
         try:
-            if content:
+            if content and self._log_assistant_chunks:
                 self._logger.log(
                     chat_id,
                     "assistant_chunk",
