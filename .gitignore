@@ -18,3 +18,4 @@ __pycache__/
 *.service.local
 packages/terrarium-client/content/
 packages/terrarium-client/content-local/
+chat-logs/
