@@ -197,14 +197,14 @@ class ToolExecutor:
     """Executes webchat tools backed by local cached content."""
 
     content_dir: Path
+    github_dir: Optional[Path] = None
+    live_site_base_url: Optional[str] = None
+    live_allowed_hosts: Optional[List[str]] = None
     projects_file: Optional[Path] = None
     site_map_file: Optional[Path] = None
     search_api_url: Optional[str] = None
     search_api_key: Optional[str] = None
-    github_dir: Path
     github_owner: str = "matthewabbott"
-    live_site_base_url: str
-    live_allowed_hosts: List[str]
 
     def __init__(
         self,
