@@ -28,16 +28,18 @@ class TerrariumWorker:
         relay: RelayClient,
         agent: AgentClient,
         poll_interval: float = 2.0,
+        poll_while_ws_connected: bool = True,
         max_turns: int = 16,
         max_tool_iterations: int = 8,
         status_probe_interval: float = 30.0,
         llm_probe_interval: float = 180.0,
         worker_updates_url: Optional[str] = None,
         worker_ws_retry: float = 5.0,
-    ) -> None:
+        ) -> None:
         self.relay = relay
         self.agent = agent
         self.poll_interval = poll_interval
+        self.poll_while_ws_connected = poll_while_ws_connected
         self.max_turns = max_turns
         self.max_tool_iterations = max_tool_iterations
         self.status_probe_interval = status_probe_interval
@@ -54,6 +56,7 @@ class TerrariumWorker:
         self._chat_queue: asyncio.Queue[str] = asyncio.Queue()
         self._pending_chat_ids: set[str] = set()
         self._tool_executor = ToolExecutor()
+        self._ws_connected: bool = False
 
     async def run_forever(self) -> None:
         logger.info("Worker started with poll interval %.1fs", self.poll_interval)
@@ -78,6 +81,9 @@ class TerrariumWorker:
                     await task
 
     async def tick(self) -> None:
+        if self._ws_connected and not self.poll_while_ws_connected:
+            logger.debug("Skipping poll; worker updates WebSocket is connected")
+            return
         chats = await self.relay.fetch_open_chats()
         for chat in chats:
             self._enqueue_chat(chat["id"])
@@ -160,7 +166,8 @@ class TerrariumWorker:
         while True:
             try:
                 async with ws_connect(self.worker_updates_url, extra_headers=headers) as websocket:
-                    logger.info("Connected to worker updates stream")
+                    self._ws_connected = True
+                    logger.info("Connected to worker updates stream at %s", self.worker_updates_url)
                     async for raw in websocket:
                         try:
                             payload = json.loads(raw)
@@ -170,10 +177,14 @@ class TerrariumWorker:
                         if payload.get("type") == "chat_activity":
                             chat_id = payload.get("chatId")
                             if isinstance(chat_id, str):
+                                logger.debug("Received chat activity event for chat %s", chat_id)
                                 self._enqueue_chat(chat_id)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Worker updates stream error: %s", exc)
                 await asyncio.sleep(self.worker_ws_retry)
+            finally:
+                self._ws_connected = False
+                logger.info("Worker updates stream disconnected; will retry in %.1fs", self.worker_ws_retry)
 
     async def _status_probe_loop(self) -> None:
         try:

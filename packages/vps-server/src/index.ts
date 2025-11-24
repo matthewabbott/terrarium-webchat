@@ -312,10 +312,31 @@ apiRouter.get('/health', (req: Request, res: Response) => {
   const workerLastSeenIso = lastWorkerSeenAt ? new Date(lastWorkerSeenAt).toISOString() : null;
   const nowIso = new Date().toISOString();
   const workerDetail = workerReady
-    ? null
-    : workerLastSeenIso
-      ? 'Worker heartbeat expired'
-      : 'Worker has not checked in yet';
+      ? null
+      : workerLastSeenIso
+        ? 'Worker heartbeat expired'
+        : 'Worker has not checked in yet';
+  const workerOfflineDetail = workerLastSeenIso
+    ? `Worker offline; last heartbeat at ${workerLastSeenIso}`
+    : 'Worker offline; no heartbeat received yet';
+  const agentStatus =
+    workerReady && workerStatus?.agentApi
+      ? workerStatus.agentApi
+      : {
+          status: workerReady ? 'unknown' : 'offline',
+          detail: workerReady ? 'Awaiting agent health data' : workerOfflineDetail,
+          checkedAt: workerReady ? null : workerLastSeenIso,
+          latencyMs: null
+        };
+  const llmStatus =
+    workerReady && workerStatus?.llm
+      ? workerStatus.llm
+      : {
+          status: workerReady ? 'unknown' : 'offline',
+          detail: workerReady ? 'Awaiting LLM health data' : workerOfflineDetail,
+          checkedAt: workerReady ? null : workerLastSeenIso,
+          latencyMs: null
+        };
   const statusChain: ChainNode[] = [
     { id: 'frontend', label: 'Frontend', status: 'online', detail: null, checkedAt: nowIso },
     { id: 'relay', label: 'Relay', status: 'online', detail: null, checkedAt: nowIso },
@@ -326,16 +347,8 @@ apiRouter.get('/health', (req: Request, res: Response) => {
       detail: workerDetail,
       checkedAt: workerLastSeenIso,
     },
-    {
-      id: 'agent',
-      label: 'terrarium-agent',
-      ...(workerStatus?.agentApi ?? normalizeComponentStatus(null, 'Awaiting agent health data')),
-    },
-    {
-      id: 'llm',
-      label: 'vLLM',
-      ...(workerStatus?.llm ?? normalizeComponentStatus(null, 'Awaiting LLM health data')),
-    },
+    { id: 'agent', label: 'terrarium-agent', ...normalizeComponentStatus(agentStatus, 'Awaiting agent health data') },
+    { id: 'llm', label: 'vLLM', ...normalizeComponentStatus(llmStatus, 'Awaiting LLM health data') },
   ];
   res.json({
     relay: 'ok',
