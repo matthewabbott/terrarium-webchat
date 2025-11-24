@@ -28,6 +28,7 @@ class Settings:
     agent_model: str
     poll_interval: float
     poll_while_ws_connected: bool
+    chat_log_dir: str
     agent_health_url: Optional[str]
     status_probe_interval: float
     llm_probe_interval: float
@@ -52,6 +53,7 @@ def load_settings() -> Settings:
     agent_model = os.environ.get("AGENT_MODEL", "terra-webchat")
     poll_interval = float(os.environ.get("POLL_INTERVAL_SECONDS", "2"))
     poll_while_ws_connected = os.environ.get("POLL_WHILE_WS_CONNECTED", "true").lower() != "false"
+    chat_log_dir = os.environ.get("CHAT_LOG_DIR", "chat-logs")
     agent_health_url = os.environ.get("AGENT_HEALTH_URL")
     status_probe_interval = float(os.environ.get("STATUS_POLL_INTERVAL_SECONDS", "30"))
     llm_probe_interval = float(os.environ.get("LLM_STATUS_POLL_INTERVAL_SECONDS", "180"))
@@ -77,6 +79,7 @@ def load_settings() -> Settings:
         agent_model=agent_model,
         poll_interval=poll_interval,
         poll_while_ws_connected=poll_while_ws_connected,
+        chat_log_dir=chat_log_dir,
         agent_health_url=agent_health_url,
         status_probe_interval=status_probe_interval,
         llm_probe_interval=llm_probe_interval,
@@ -105,6 +108,7 @@ async def main() -> None:
             agent=agent_client,
             poll_interval=settings.poll_interval,
             poll_while_ws_connected=settings.poll_while_ws_connected,
+            chat_log_dir=settings.chat_log_dir,
             status_probe_interval=settings.status_probe_interval,
             llm_probe_interval=settings.llm_probe_interval,
             worker_updates_url=settings.worker_updates_url,

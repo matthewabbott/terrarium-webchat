@@ -193,6 +193,8 @@ export function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const systemNoticeCounterRef = useRef(0);
   const noticeKeysRef = useRef<Set<string>>(new Set());
+  const lastWorkerStateRef = useRef<WorkerStateValue>('idle');
+  const bottomRef = useRef<HTMLDivElement | null>(null);
   const terraHasResponded = useMemo(() => messages.some((msg) => msg.sender === 'Terra'), [messages]);
   const terraReady = terraHasResponded || llmStatus === 'ready';
   const awaitingTerra = workerState.state === 'queued' || workerState.state === 'processing';
@@ -260,6 +262,38 @@ export function App() {
     noticeKeysRef.current.clear();
   }, []);
 
+  useEffect(() => {
+    if (!chat) return;
+    const prev = lastWorkerStateRef.current;
+    if (prev === workerState.state && prev !== 'error') {
+      return;
+    }
+    lastWorkerStateRef.current = workerState.state;
+    const key = `worker-${workerState.state}-${workerState.updatedAt ?? 'na'}`;
+    let content: string | null = null;
+    switch (workerState.state) {
+      case 'queued':
+        content = 'Terra queued your message and is waking up.';
+        break;
+      case 'processing':
+        content = 'Terra is thinking through her reply.';
+        break;
+      case 'responded':
+        content = 'Terra finished responding to the last request.';
+        break;
+      case 'error':
+        content = workerState.detail
+          ? `Terra hit a snag: ${workerState.detail}`
+          : 'Terra hit an error. Give her a moment and try again.';
+        break;
+      default:
+        content = null;
+    }
+    if (content) {
+      ensureSystemNotice(key, content);
+    }
+  }, [chat, workerState, ensureSystemNotice]);
+
   const handleRelayFailure = useCallback(
     (key: string, action: string, status: number | null, options?: { suppressFormError?: boolean }) => {
       const notice = describeRelayFailure(action, status);
@@ -308,6 +342,15 @@ export function App() {
 
   const toggleTheme = useCallback(() => {
     setIsDarkTheme((prev) => !prev);
+  }, []);
+
+  const scrollToTop = useCallback(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, []);
+
+  const scrollToBottom = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }, []);
 
   useEffect(() => {
@@ -495,7 +538,15 @@ export function App() {
   useEffect(() => {
     if (!messageContainerRef.current) return;
     messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  useEffect(() => {
+    if (!assistantStreaming && !assistantStream) return;
+    if (!messageContainerRef.current) return;
+    messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [assistantStream, assistantStreaming]);
 
   const autoResizeTextarea = useCallback(() => {
     if (!textareaRef.current) return;
@@ -748,6 +799,10 @@ export function App() {
             <div className="chat-meta">
               <span>Chat ID: {chat.id.slice(0, 8)}</span>
               <span className={`socket-indicator socket-indicator--${socketStatus}`}>{socketStatus}</span>
+              <div className="scroll-controls">
+                <button type="button" onClick={scrollToTop}>Top</button>
+                <button type="button" onClick={scrollToBottom}>Bottom</button>
+              </div>
               <button className="reset-btn" type="button" onClick={resetChat}>
                 Reset chat
               </button>
@@ -764,13 +819,17 @@ export function App() {
                   <p>Terra is thinking…</p>
                 </div>
               )}
+              {assistantStreaming && assistantStream && (
+                <div className="message message--terra message--streaming">
+                  <div className="message__meta">
+                    <span>Terra (streaming)</span>
+                    <time>{formatter.format(new Date())}</time>
+                  </div>
+                  <p>{assistantStream}</p>
+                </div>
+              )}
+              <div ref={bottomRef} />
             </div>
-            {assistantStreaming && assistantStream && (
-              <div className="assistant-stream" aria-live="polite">
-                <div className="assistant-stream__label">Terra is thinking…</div>
-                <div className="assistant-stream__body">{assistantStream}</div>
-              </div>
-            )}
             <form className="composer" onSubmit={handleSendMessage}>
               <textarea
                 ref={textareaRef}

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urljoin, urlparse
@@ -158,6 +160,64 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_live_page_source",
+            "description": "Fetch a live page (guarded) and return trimmed HTML source.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slug_or_url": {
+                        "type": "string",
+                        "description": "Slug like 'projects' or full URL (must be allowlisted).",
+                    }
+                },
+                "required": ["slug_or_url"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "fetch_live_page_source",
+            "description": "Fetch a live page (guarded) and return trimmed HTML source.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "slug_or_url": {
+                        "type": "string",
+                        "description": "Slug like 'projects' or full URL (must be allowlisted).",
+                    }
+                },
+                "required": ["slug_or_url"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_enhancement_request",
+            "description": "Log an enhancement request from Terra for Matthew to review later (stored on the worker).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "Short description of the enhancement idea.",
+                    },
+                    "details": {
+                        "type": "string",
+                        "description": "Optional longer notes or rationale.",
+                    },
+                },
+                "required": ["summary"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
 
 
@@ -170,6 +230,7 @@ class ToolExecutor:
     live_site_base_url: Optional[str] = None
     live_allowed_hosts: Optional[List[str]] = None
     live_allowed_urls: Optional[List[str]] = None
+    enhancement_dir: Optional[Path] = None
     search_api_url: Optional[str] = None
     search_api_key: Optional[str] = None
     github_owner: str = "matthewabbott"
@@ -184,6 +245,7 @@ class ToolExecutor:
         live_site_base_url: Optional[str] = None,
         live_allowed_hosts: Optional[List[str]] = None,
         live_allowed_urls: Optional[List[str]] = None,
+        enhancement_dir: Optional[Path] = None,
     ) -> None:
         base_dir = Path(__file__).resolve().parent.parent / "content"
         self.content_dir = content_dir or base_dir
@@ -205,11 +267,15 @@ class ToolExecutor:
         self.live_allowed_hosts = [h.strip() for h in allowed if h.strip()] or default_hosts
         default_urls = [
             "https://www.linkedin.com/in/matthew-abbott-88390065/",
-            "https://x.com/Ttobbattam",
-            "https://twitter.com/Ttobbattam",
+            "https://x.com/ttobbattam",
+            "https://twitter.com/ttobbattam",
         ]
         env_urls = (os.environ.get("LIVE_ALLOWED_URLS") or "").split(",")
         self.live_allowed_urls = [u.strip() for u in (live_allowed_urls or env_urls) if u.strip()] or default_urls
+        self.enhancement_dir = enhancement_dir or Path(
+            os.environ.get("ENHANCEMENT_DIR") or (self.content_dir / "enhancements")
+        )
+        self.enhancement_dir.mkdir(parents=True, exist_ok=True)
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         if tool_name == "fetch_site_page":
@@ -226,6 +292,8 @@ class ToolExecutor:
             return self._get_github_repo(arguments)
         if tool_name == "fetch_live_page":
             return await self._fetch_live_page(arguments)
+        if tool_name == "fetch_live_page_source":
+            return await self._fetch_live_page(arguments, return_source=True)
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
 
     def _read_json_file(self, path: Optional[Path]) -> Optional[Dict[str, Any]]:
@@ -318,7 +386,7 @@ class ToolExecutor:
 
         return json.dumps({"repo": name, "file": target_file, "content": content[:100_000]})
 
-    async def _fetch_live_page(self, arguments: Dict[str, Any]) -> str:
+    async def _fetch_live_page(self, arguments: Dict[str, Any], return_source: bool = False) -> str:
         slug = (arguments.get("slug_or_url") or "").strip()
         if not slug:
             return json.dumps({"error": "slug_or_url is required"})
@@ -355,7 +423,10 @@ class ToolExecutor:
             fallback = json.loads(self._fetch_site_page({"slug_or_url": slug}))
             return json.dumps({"error": f"Live fetch failed: {exc}", "cached": fallback})
 
-        text = _html_to_text(raw.decode("utf-8", errors="ignore"))
+        body = raw.decode("utf-8", errors="ignore")
+        if return_source:
+            return json.dumps({"url": url, "html": body[:100_000]})
+        text = _html_to_text(body)
         return json.dumps({"url": url, "content": text[:100_000]})
 
     async def _search_web(self, arguments: Dict[str, Any]) -> str:
@@ -396,3 +467,25 @@ class ToolExecutor:
             results.append({"title": title, "url": url, "snippet": snippet})
 
         return json.dumps({"query": query, "results": results, "source": self.search_api_url})
+
+    def _write_enhancement_request(self, arguments: Dict[str, Any]) -> str:
+        summary = (arguments.get("summary") or "").strip()
+        details = (arguments.get("details") or "").strip()
+        if not summary:
+            return json.dumps({"error": "summary is required"})
+        timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        slug = re.sub(r"[^a-zA-Z0-9]+", "-", summary).strip("-").lower() or "idea"
+        filename = f"{timestamp}-{slug[:50] or 'idea'}.txt"
+        path = self.enhancement_dir / filename
+        content_lines = [
+            f"Summary: {summary}",
+            f"Timestamp: {timestamp} UTC",
+        ]
+        if details:
+            content_lines.append("")
+            content_lines.append(details)
+        try:
+            path.write_text("\n".join(content_lines), encoding="utf-8")
+        except Exception as exc:  # noqa: BLE001
+            return json.dumps({"error": f"Unable to write enhancement request: {exc}"})
+        return json.dumps({"ok": True, "file": str(path), "summary": summary})

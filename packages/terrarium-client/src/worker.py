@@ -7,6 +7,7 @@ import json
 import logging
 from contextlib import suppress
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Dict, Optional
 
 from websockets.client import connect as ws_connect
@@ -21,6 +22,30 @@ from .status import ComponentStatus, WorkerStatusReport
 logger = logging.getLogger(__name__)
 
 
+class ChatLogger:
+    """Append-only JSONL logger for chat events."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = root
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def log(self, chat_id: str, event_type: str, payload: Dict) -> None:
+        record = {
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "chatId": chat_id,
+            "type": event_type,
+            "payload": payload,
+        }
+        try:
+            path = self.root / f"{chat_id}.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as handle:
+                json.dump(record, handle, ensure_ascii=False)
+                handle.write("\n")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Unable to write chat log entry: %s", exc)
+
+
 class TerrariumWorker:
     def __init__(
         self,
@@ -29,6 +54,7 @@ class TerrariumWorker:
         agent: AgentClient,
         poll_interval: float = 2.0,
         poll_while_ws_connected: bool = True,
+        chat_log_dir: str = "chat-logs",
         max_turns: int = 16,
         max_tool_iterations: int = 8,
         status_probe_interval: float = 30.0,
@@ -57,6 +83,7 @@ class TerrariumWorker:
         self._pending_chat_ids: set[str] = set()
         self._tool_executor = ToolExecutor()
         self._ws_connected: bool = False
+        self._logger = ChatLogger(Path(chat_log_dir))
 
     async def run_forever(self) -> None:
         logger.info("Worker started with poll interval %.1fs", self.poll_interval)
@@ -114,6 +141,11 @@ class TerrariumWorker:
         message: Dict[str, str],
     ) -> None:
         logger.info("Processing message %s for chat %s", message["id"], conversation.chat_id)
+        self._logger.log(
+            conversation.chat_id,
+            "visitor_message",
+            {"id": message["id"], "content": message.get("content", ""), "createdAt": message.get("createdAt")},
+        )
         conversation.prune(self.max_turns)
         await self._update_worker_state(conversation.chat_id, "processing")
         worker_state = "responded"
@@ -224,6 +256,7 @@ class TerrariumWorker:
         state: str,
         detail: Optional[str] = None,
     ) -> None:
+        self._logger.log(chat_id, "worker_state", {"state": state, "detail": detail})
         try:
             await self.relay.post_worker_state(chat_id, state, detail)
         except Exception as exc:  # noqa: BLE001
@@ -248,6 +281,15 @@ class TerrariumWorker:
             if tool_calls:
                 # Save assistant turn (tool calls may not have content)
                 conversation.add_turn("assistant", response_message.get("content", ""))
+                if tool_calls:
+                    self._logger.log(
+                        conversation.chat_id,
+                        "tool_calls",
+                        {
+                            "iteration": iteration,
+                            "tool_calls": tool_calls,
+                        },
+                    )
                 messages.append(response_message)
                 for call in tool_calls:
                     tool_name = call.get("function", {}).get("name", "")
@@ -264,6 +306,11 @@ class TerrariumWorker:
                         "name": tool_name,
                         "content": result,
                     }
+                    self._logger.log(
+                        conversation.chat_id,
+                        "tool_result",
+                        {"tool_call_id": tool_id, "name": tool_name, "arguments": args, "result": result},
+                    )
                     messages.append(tool_result_message)
                     conversation.add_turn("tool", result)
                 continue
@@ -271,6 +318,15 @@ class TerrariumWorker:
             content = response_message.get("content", "") or ""
             if not content:
                 raise AgentClientError("Terrarium agent returned an empty response")
+            self._logger.log(
+                conversation.chat_id,
+                "assistant_message",
+                {
+                    "content": content,
+                    "latency_ms": last_latency_ms,
+                    "iterations": iteration + 1,
+                },
+            )
             return content, last_latency_ms
 
         raise AgentClientError("Reached max tool iterations without a response")
@@ -279,6 +335,12 @@ class TerrariumWorker:
         if not content and not done:
             return
         try:
+            if content:
+                self._logger.log(
+                    chat_id,
+                    "assistant_chunk",
+                    {"content": content, "done": done},
+                )
             await self.relay.post_agent_chunk(chat_id, content=content, done=done)
         except Exception as exc:  # noqa: BLE001
             logger.debug("Unable to publish chunk for chat %s: %s", chat_id, exc)

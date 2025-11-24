@@ -624,6 +624,7 @@ button[disabled] {
   align-items: center;
   font-size: 0.85rem;
   color: var(--text-tertiary);
+  flex-wrap: wrap;
 }
 
 .socket-indicator {
@@ -656,6 +657,21 @@ button[disabled] {
   transform: none;
 }
 
+.scroll-controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.scroll-controls button {
+  border: 1px solid var(--border-primary);
+  background: var(--bg-secondary);
+  color: var(--text-tertiary);
+  border-radius: 8px;
+  padding: 0.35rem 0.75rem;
+  cursor: pointer;
+}
+
 .log {
   flex: 1;
   min-height: 0;
@@ -686,6 +702,11 @@ button[disabled] {
   align-self: flex-start;
   border-color: var(--message-terra-border);
   background: var(--message-terra-bg);
+}
+
+.message--streaming {
+  border-style: dashed;
+  opacity: 0.95;
 }
 
 .message--system {

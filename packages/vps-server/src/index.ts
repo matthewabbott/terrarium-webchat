@@ -1,6 +1,8 @@
 import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import { createServer } from 'node:http';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
 
@@ -9,6 +11,8 @@ const SERVICE_TOKEN = process.env.SERVICE_TOKEN ?? 'super-secret-service-token';
 const PORT = Number(process.env.PORT ?? 4100);
 const BASE_PATH = (process.env.BASE_PATH ?? '').replace(/\/$/, '');
 const WORKER_STALE_THRESHOLD_MS = Number(process.env.WORKER_STALE_THRESHOLD_MS ?? 60_000);
+const LOG_DIR = process.env.LOG_DIR ?? path.join(process.cwd(), 'chat-logs');
+mkdirSync(LOG_DIR, { recursive: true });
 
 interface Message {
   id: string;
@@ -68,6 +72,21 @@ const app = express();
 app.use(express.json());
 
 const apiRouter = express.Router();
+
+function logEvent(chatId: string, type: string, payload: Record<string, unknown>) {
+  const entry = {
+    timestamp: new Date().toISOString(),
+    chatId,
+    type,
+    ...payload,
+  };
+  try {
+    const target = path.join(LOG_DIR, `${chatId}.jsonl`);
+    appendFileSync(target, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch (error) {
+    console.error('Failed to write chat log', error);
+  }
+}
 
 function recordWorkerHeartbeat() {
   lastWorkerSeenAt = Date.now();
@@ -182,6 +201,7 @@ apiRouter.post('/chat/:chatId/messages', (req: Request, res: Response) => {
     emittedAt: new Date().toISOString()
   });
   setWorkerState(chatId, 'queued');
+  logEvent(chatId, 'visitor_message', { id: message.id, content, createdAt: message.createdAt });
   res.json(message);
 });
 
@@ -217,6 +237,7 @@ apiRouter.post('/chat/:chatId/agent', (req: Request, res: Response) => {
   };
   ensureChat(chatId).push(message);
   broadcast(chatId, message);
+  logEvent(chatId, 'assistant_message', { id: message.id, content, createdAt: message.createdAt });
   res.json(message);
 });
 
@@ -232,6 +253,9 @@ apiRouter.post('/chat/:chatId/agent-chunk', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Chunk content required' });
   }
   broadcastAssistantChunk(chatId, content, Boolean(done));
+  if (content) {
+    logEvent(chatId, 'assistant_chunk', { content, done: Boolean(done) });
+  }
   res.json({ ok: true });
 });
 
@@ -289,6 +313,7 @@ apiRouter.post('/chat/:chatId/worker-state', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid worker state' });
   }
   setWorkerState(chatId, state, typeof detail === 'string' ? detail : null);
+  logEvent(chatId, 'worker_state', { state, detail: typeof detail === 'string' ? detail : null });
   return res.json({ ok: true });
 });
 
