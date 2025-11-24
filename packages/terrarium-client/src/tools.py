@@ -58,14 +58,6 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
     {
         "type": "function",
         "function": {
-            "name": "get_site_map",
-            "description": "List the key sections and pages available on mbabbott.com.",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "fetch_site_page",
             "description": "Fetch cached content for a specific site page or section (slug or URL).",
             "parameters": {
@@ -100,32 +92,9 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
     {
         "type": "function",
         "function": {
-            "name": "about_matthew",
-            "description": "Structured bio for Matthew Abbott: roles, focus areas, and contact hints.",
+            "name": "what_matthew_wants",
+            "description": "Matthew's own guidance or tongue-in-cheek blurb to echo.",
             "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "list_projects",
-            "description": "List known projects with short blurbs and tags.",
-            "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "get_project_details",
-            "description": "Fetch structured details for a specific project by name.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "Project name or slug to look up."}
-                },
-                "required": ["name"],
-                "additionalProperties": False,
-            },
         },
     },
     {
@@ -200,8 +169,7 @@ class ToolExecutor:
     github_dir: Optional[Path] = None
     live_site_base_url: Optional[str] = None
     live_allowed_hosts: Optional[List[str]] = None
-    projects_file: Optional[Path] = None
-    site_map_file: Optional[Path] = None
+    live_allowed_urls: Optional[List[str]] = None
     search_api_url: Optional[str] = None
     search_api_key: Optional[str] = None
     github_owner: str = "matthewabbott"
@@ -209,41 +177,47 @@ class ToolExecutor:
     def __init__(
         self,
         content_dir: Optional[Path] = None,
-        projects_file: Optional[Path] = None,
-        site_map_file: Optional[Path] = None,
         search_api_url: Optional[str] = None,
         search_api_key: Optional[str] = None,
         github_dir: Optional[Path] = None,
         github_owner: str = "matthewabbott",
         live_site_base_url: Optional[str] = None,
         live_allowed_hosts: Optional[List[str]] = None,
+        live_allowed_urls: Optional[List[str]] = None,
     ) -> None:
         base_dir = Path(__file__).resolve().parent.parent / "content"
         self.content_dir = content_dir or base_dir
-        self.projects_file = projects_file
-        self.site_map_file = site_map_file
         self.search_api_url = search_api_url or os.environ.get("SEARCH_API_URL")
         self.search_api_key = search_api_key or os.environ.get("SEARCH_API_KEY")
         self.github_dir = github_dir or (self.content_dir / "github")
         self.github_owner = github_owner
         self.live_site_base_url = live_site_base_url or os.environ.get("LIVE_SITE_BASE_URL") or "https://mbabbott.com"
         allowed = live_allowed_hosts or (os.environ.get("LIVE_ALLOWED_HOSTS") or "").split(",")
-        default_hosts = ["mbabbott.com", "www.mbabbott.com"]
+        default_hosts = [
+            "mbabbott.com",
+            "www.mbabbott.com",
+            "linkedin.com",
+            "www.linkedin.com",
+            "x.com",
+            "twitter.com",
+            "www.twitter.com",
+        ]
         self.live_allowed_hosts = [h.strip() for h in allowed if h.strip()] or default_hosts
+        default_urls = [
+            "https://www.linkedin.com/in/matthew-abbott-88390065/",
+            "https://x.com/Ttobbattam",
+            "https://twitter.com/Ttobbattam",
+        ]
+        env_urls = (os.environ.get("LIVE_ALLOWED_URLS") or "").split(",")
+        self.live_allowed_urls = [u.strip() for u in (live_allowed_urls or env_urls) if u.strip()] or default_urls
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
-        if tool_name == "get_site_map":
-            return self._get_site_map()
         if tool_name == "fetch_site_page":
             return self._fetch_site_page(arguments)
         if tool_name == "search_site":
             return self._search_site(arguments)
-        if tool_name == "about_matthew":
-            return self._about_matthew()
-        if tool_name == "list_projects":
-            return self._list_projects()
-        if tool_name == "get_project_details":
-            return self._get_project_details(arguments)
+        if tool_name == "what_matthew_wants":
+            return self._what_matthew_wants()
         if tool_name == "search_web":
             return await self._search_web(arguments)
         if tool_name == "list_github_repos":
@@ -263,11 +237,6 @@ class ToolExecutor:
             return json.loads(path.read_text(encoding="utf-8"))
         except Exception:  # pragma: no cover - defensive
             return None
-
-    def _get_site_map(self) -> str:
-        from_file = self._read_json_file(self.site_map_file)
-        default = {"sections": ["home", "projects", "about", "contact"], "note": "Populate site_map.json for real data"}
-        return json.dumps(from_file or default)
 
     def _fetch_site_page(self, arguments: Dict[str, Any]) -> str:
         slug = (arguments.get("slug_or_url") or "").strip().lower()
@@ -304,27 +273,20 @@ class ToolExecutor:
             return json.dumps({"result": "No matches in cached content", "query": query})
         return json.dumps({"query": query, "results": snippets})
 
-    def _about_matthew(self) -> str:
-        # Placeholder until real bio content is added.
-        return json.dumps(
-            {
-                "name": "Matthew Abbott",
-                "roles": ["engineering leader", "AI/ML practitioner"],
-                "note": "Populate content/about.json for richer details.",
-            }
-        )
-
-    def _list_projects(self) -> str:
-        data = self._read_json_file(self.projects_file) or {"projects": []}
-        return json.dumps(data)
-
-    def _get_project_details(self, arguments: Dict[str, Any]) -> str:
-        name = (arguments.get("name") or "").strip().lower()
-        data = self._read_json_file(self.projects_file) or {"projects": []}
-        for project in data.get("projects", []):
-            if isinstance(project, dict) and project.get("name", "").lower() == name:
-                return json.dumps(project)
-        return json.dumps({"error": f"Project not found: {name or 'unspecified'}"})
+    def _what_matthew_wants(self) -> str:
+        path = self.content_dir / "what_matthew_wants.txt"
+        if not path.exists():
+            return json.dumps(
+                {
+                    "note": "Add a short blurb in content/what_matthew_wants.txt to customize this tool.",
+                    "content": "",
+                }
+            )
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception as exc:  # pragma: no cover - defensive
+            return json.dumps({"error": f"Unable to read blurb: {exc}"})
+        return json.dumps({"content": content.strip()})
 
     def _list_github_repos(self) -> str:
         repos_path = self.github_dir / "repos.json"
@@ -369,6 +331,20 @@ class ToolExecutor:
         host = parsed.hostname or ""
         if host.lower() not in {h.lower() for h in self.live_allowed_hosts}:
             return json.dumps({"error": "Host not allowed for live fetch", "allowed_hosts": self.live_allowed_hosts})
+
+        # Restrict social hosts to specific profile URLs to avoid broad scraping.
+        social_hosts = {"linkedin.com", "www.linkedin.com", "x.com", "twitter.com", "www.twitter.com"}
+        if host.lower() in social_hosts:
+            normalized_url = url.rstrip("/")
+            allowed_prefixes = [u.rstrip("/") for u in self.live_allowed_urls]
+            if not any(normalized_url.startswith(prefix) for prefix in allowed_prefixes):
+                return json.dumps(
+                    {
+                        "error": "URL not allowed for live fetch",
+                        "allowed_urls": self.live_allowed_urls,
+                        "requested": url,
+                    }
+                )
 
         try:
             async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
