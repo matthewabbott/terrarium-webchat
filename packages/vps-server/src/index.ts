@@ -268,11 +268,18 @@ async function pruneLogs() {
 
 function logEvent(chatId: string, type: string, payload: Record<string, unknown>) {
   if (!CONFIG.logChatEvents) return;
+  const scrubbed = { ...payload };
+  const secretKeys = ['accessCode', 'access_code', 'x-service-token', 'x-signature', 'authorization'];
+  for (const key of secretKeys) {
+    if (key in scrubbed) {
+      scrubbed[key] = '[redacted]';
+    }
+  }
   const entry = {
     timestamp: new Date().toISOString(),
     chatId,
     type,
-    ...payload,
+    ...scrubbed,
   };
   const datePrefix = formatDate(new Date(), 'yyyyMMdd');
   const target = path.join(CONFIG.logDir, `${datePrefix}-${chatId}.jsonl`);
