@@ -35,6 +35,11 @@ Workstreams & Tasks
 - Status: TODO | Task: Worker↔relay auth upgrade (HMAC signing or mTLS). Owner: LLM-host to implement signing; VPS-side to verify. DoD: toggle-able via env; compatibility path maintained.
 - Status: TODO | Task: Abuse protection on public POST: optional CAPTCHA or lightweight challenge. Owner: VPS-side. DoD: feature flag; documented impact.
 
+Handover notes for VPS-side agent:
+- HMAC signing is implemented and optional. To enable: set `HMAC_ENABLED=true` and a shared `HMAC_SECRET` on both worker (terrarium-client) and relay (vps-server); optionally adjust `HMAC_MAX_SKEW_SECONDS` (default 300). Restart both services.
+- Logs: worker errors will tag 401s as `auth` to help debug signature/token issues.
+- Relay logs are now date-prefixed. Remaining log hygiene (secret redaction/rotation) and abuse protection are still open.
+
 Assumptions & Notes
 - Chat/worker state persistence across deploys is out of scope for now.
 - Maintenance windows are acceptable; schedule disruptive changes (auth/mTLS) with coordination between agents.
