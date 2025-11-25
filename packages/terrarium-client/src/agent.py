@@ -251,9 +251,15 @@ class AgentClient:
                 )
                 await asyncio.sleep(backoff)
             except HTTPStatusError as exc:
-                category = "server_error" if exc.response.status_code >= 500 else "http_error"
+                status = exc.response.status_code if exc.response is not None else 0
+                if status == 401:
+                    category = "auth"
+                elif status >= 500:
+                    category = "server_error"
+                else:
+                    category = "http_error"
                 self._record_failure()
-                raise AgentClientError(f"Agent returned HTTP {exc.response.status_code}", category=category) from exc
+                raise AgentClientError(f"Agent returned HTTP {status}", category=category) from exc
             except TimeoutException as exc:
                 self._record_failure()
                 if attempt == self._max_retries - 1:
