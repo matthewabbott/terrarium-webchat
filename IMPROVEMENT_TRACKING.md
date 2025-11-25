@@ -28,6 +28,8 @@ Workstreams & Tasks
 - Status: TODO | Task: Terra API resilience: timeouts, retry with jitter, simple circuit breaker, and error categorization (timeout/4xx/5xx) feeding worker-state detail. DoD: unit tests + integration stub; UI shows clearer errors.
 - Status: TODO | Task: Tool schema single source of truth: generate prompt/tool lists from one schema to prevent drift. DoD: one definition drives both `prompt.py` and `ToolExecutor`; tests guard drift.
 - Status: TODO | Task: Concurrency controls: configurable max in-flight Terra calls; queue/backpressure for busy chats. DoD: load test with multiple chats shows bounded concurrency and no duplicate handling.
+- Status: TODO | Task: Agent API robustness (LLM-host): add concurrency limits on streaming and non-streaming calls, per-request timeouts/retries with jitter, and a simple circuit breaker; surface metrics (latency/error counts, open streams). DoD: capped concurrent streams, metrics endpoint/doc, structured errors.
+- Status: TODO | Task: Worker logging efficiency: replace per-call file writes with a small bounded async log queue + drop counter to avoid event-loop stalls under load. DoD: load test shows stable latency; drops counted.
 
 5) Security Hardening (Joint, with ownership marked)
 - Status: TODO | Task: Worker↔relay auth upgrade (HMAC signing or mTLS). Owner: LLM-host to implement signing; VPS-side to verify. DoD: toggle-able via env; compatibility path maintained.
