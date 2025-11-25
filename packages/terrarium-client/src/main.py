@@ -37,6 +37,7 @@ class Settings:
     worker_ws_retry: float
     max_concurrent_chats: int
     max_chat_queue_size: int
+    max_log_bytes: int
 
 
 def derive_worker_updates_url(api_base_url: str) -> str:
@@ -65,6 +66,7 @@ def load_settings() -> Settings:
     worker_ws_retry = float(os.environ.get("WORKER_WS_RETRY_SECONDS", "5"))
     max_concurrent_chats = int(os.environ.get("MAX_CONCURRENT_CHATS", "2"))
     max_chat_queue_size = int(os.environ.get("MAX_CHAT_QUEUE_SIZE", "200"))
+    max_log_bytes = int(os.environ.get("MAX_LOG_BYTES", str(1_000_000_000)))
 
     missing = [
         name
@@ -94,6 +96,7 @@ def load_settings() -> Settings:
         worker_ws_retry=worker_ws_retry,
         max_concurrent_chats=max_concurrent_chats,
         max_chat_queue_size=max_chat_queue_size,
+        max_log_bytes=max_log_bytes,
     )
 
 
@@ -125,6 +128,7 @@ async def main() -> None:
             worker_ws_retry=settings.worker_ws_retry,
             max_concurrent_chats=settings.max_concurrent_chats,
             max_queue_size=settings.max_chat_queue_size,
+            chat_log_max_bytes=settings.max_log_bytes,
         )
 
         try:

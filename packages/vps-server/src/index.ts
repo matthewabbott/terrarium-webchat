@@ -59,6 +59,7 @@ const LOG_QUEUE_MAX = 1000;
 const LOG_QUEUE_BATCH_SIZE = 100;
 const HEARTBEAT_INTERVAL_MS = 30_000;
 const SOCKET_BACKPRESSURE_THRESHOLD_BYTES = 512 * 1024;
+const LOG_MAX_BYTES = parseNumber(env.LOG_MAX_BYTES, 1_000_000_000);
 
 if (CONFIG.logChatEvents) {
   mkdirSync(CONFIG.logDir, { recursive: true });
@@ -239,15 +240,46 @@ async function flushLogs() {
   for (const [target, lines] of grouped) {
     await appendFile(target, lines.join(''), 'utf8');
   }
+  await pruneLogs();
+}
+
+async function pruneLogs() {
+  try {
+    const files = (await fsPromises.readdir(CONFIG.logDir))
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((name) => path.join(CONFIG.logDir, name));
+    const stats = await Promise.all(
+      files.map(async (f) => {
+        const s = await fsPromises.stat(f);
+        return { file: f, mtime: s.mtimeMs, size: s.size };
+      })
+    );
+    let total = stats.reduce((sum, s) => sum + s.size, 0);
+    const sorted = stats.sort((a, b) => a.mtime - b.mtime);
+    while (total > LOG_MAX_BYTES && sorted.length) {
+      const victim = sorted.shift()!;
+      await fsPromises.unlink(victim.file).catch(() => {});
+      total -= victim.size;
+    }
+  } catch (error) {
+    console.error('Failed to prune chat logs', error);
+  }
 }
 
 function logEvent(chatId: string, type: string, payload: Record<string, unknown>) {
   if (!CONFIG.logChatEvents) return;
+  const scrubbed = { ...payload };
+  const secretKeys = ['accessCode', 'access_code', 'x-service-token', 'x-signature', 'authorization'];
+  for (const key of secretKeys) {
+    if (key in scrubbed) {
+      scrubbed[key] = '[redacted]';
+    }
+  }
   const entry = {
     timestamp: new Date().toISOString(),
     chatId,
     type,
-    ...payload,
+    ...scrubbed,
   };
   const datePrefix = formatDate(new Date(), 'yyyyMMdd');
   const target = path.join(CONFIG.logDir, `${datePrefix}-${chatId}.jsonl`);
