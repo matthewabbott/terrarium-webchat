@@ -33,6 +33,9 @@ SERVICE_TOKEN=super-secret-service-token
 PORT=4100
 BASE_PATH=/terrarium   # optional; defaults to empty so routes live at /api
 WORKER_STALE_THRESHOLD_MS=60000  # optional; heartbeat freshness window for /api/health
+LOG_CHAT_EVENTS=true  # set to false to disable chat log writes
+LOG_DIR=/var/log/terrarium-chat  # optional; where JSONL chat logs are written when enabled
+LOG_ASSISTANT_CHUNKS=false  # optional; log streaming chunks when chat logging is on
 ```
 
 When `BASE_PATH` is set, HTTP routes live at `<BASE_PATH>/api/*` and the WebSocket listens at `<BASE_PATH>/api/chat`. Leave it empty for local dev.

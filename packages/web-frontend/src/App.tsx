@@ -894,9 +894,8 @@ export function App() {
               )}
               <div ref={bottomRef} />
             </div>
-            <div className="scroll-controls">
+            <div className="scroll-controls scroll-controls--footer">
               <button type="button" onClick={scrollToTop}>Top</button>
-              <button type="button" onClick={scrollToBottom}>Bottom</button>
               {!isPinnedToBottom && <span className="scroll-controls__status">Auto-scroll paused</span>}
             </div>
             <form className="composer" onSubmit={handleSendMessage}>

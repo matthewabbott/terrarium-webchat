@@ -2,6 +2,16 @@
 
 This guide explains how to run the terrarium webchat stack across the VPS (REST relay + website assets) and the local LLM host (outbound worker). It mirrors the existing dice-roller deployment flow so you can reuse PM2, nginx, and `/var/www/html` conventions.
 
+### Safe deploy workflow (don’t wipe live again)
+- The **staging mirror** lives at `~/mbabbott-webpage/var/www/html/` and is the source of truth for deploys. Do your staging rsyncs into that mirror.
+- The **live site** is `/var/www/html/`. To deploy, sync **staging → live**:
+  ```bash
+  sudo rsync -av --delete ~/mbabbott-webpage/var/www/html/ /var/www/html/
+  sudo chown -R www-data:www-data /var/www/html/
+  ```
+  Never rsync from live back into staging (that’s what wiped the site).
+- Relay/other service `.env` files stay only under `/var/www/html/.../.env`; keep a local copy if you need to re-create them after a rebuild.
+
 ## 1. Build artifacts on the VPS
 
 ```bash
@@ -34,12 +44,15 @@ Outputs:
    ```
 4. **Environment** – copy `.env.example` (`packages/vps-server/.env.example`) to `/var/www/html/terrarium-server/.env` and fill in (example values shown):
    ```ini
-   CHAT_PASSWORD=terra-access                # visitor access code
-   SERVICE_TOKEN=super-secret-service-token  # shared secret with the worker
-   PORT=4100                                 # relay port (match nginx proxy)
-   BASE_PATH=/terrarium                      # mount REST + WS under /terrarium/api
-   WORKER_STALE_THRESHOLD_MS=60000           # optional heartbeat freshness window for /api/health
-   ```
+CHAT_PASSWORD=terra-access                # visitor access code
+SERVICE_TOKEN=super-secret-service-token  # shared secret with the worker
+PORT=4100                                 # relay port (match nginx proxy)
+BASE_PATH=/terrarium                      # mount REST + WS under /terrarium/api
+WORKER_STALE_THRESHOLD_MS=60000           # optional heartbeat freshness window for /api/health
+LOG_CHAT_EVENTS=true                      # set false to disable chat log writes on the relay
+LOG_DIR=/var/log/terrarium-chat           # optional custom log directory when enabled
+LOG_ASSISTANT_CHUNKS=false                # include streaming chunks in logs when enabled
+```
 5. **PM2 service**:
    ```bash
    cd /var/www/html/terrarium-server

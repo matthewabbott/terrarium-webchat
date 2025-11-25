@@ -11,9 +11,13 @@ const SERVICE_TOKEN = process.env.SERVICE_TOKEN ?? 'super-secret-service-token';
 const PORT = Number(process.env.PORT ?? 4100);
 const BASE_PATH = (process.env.BASE_PATH ?? '').replace(/\/$/, '');
 const WORKER_STALE_THRESHOLD_MS = Number(process.env.WORKER_STALE_THRESHOLD_MS ?? 60_000);
-const LOG_DIR = process.env.LOG_DIR ?? path.join(process.cwd(), 'chat-logs');
-const LOG_ASSISTANT_CHUNKS = (process.env.LOG_ASSISTANT_CHUNKS ?? 'false').toLowerCase() === 'true';
-mkdirSync(LOG_DIR, { recursive: true });
+const LOG_CHAT_EVENTS = (process.env.LOG_CHAT_EVENTS ?? 'true').toLowerCase() === 'true';
+const LOG_DIR = LOG_CHAT_EVENTS ? process.env.LOG_DIR ?? path.join(process.cwd(), 'chat-logs') : null;
+const LOG_ASSISTANT_CHUNKS =
+  LOG_CHAT_EVENTS && (process.env.LOG_ASSISTANT_CHUNKS ?? 'false').toLowerCase() === 'true';
+if (LOG_DIR) {
+  mkdirSync(LOG_DIR, { recursive: true });
+}
 
 interface Message {
   id: string;
@@ -75,6 +79,7 @@ app.use(express.json());
 const apiRouter = express.Router();
 
 function logEvent(chatId: string, type: string, payload: Record<string, unknown>) {
+  if (!LOG_DIR) return;
   const entry = {
     timestamp: new Date().toISOString(),
     chatId,
