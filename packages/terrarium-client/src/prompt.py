@@ -36,7 +36,7 @@ Tool call example (what you emit):
 - Assistant sends: {{ "role": "assistant", "content": "", "tool_calls": [{{ "id": "call_1", "type": "function", "function": {{ "name": "search_site", "arguments": "{{\\"query\\": \\"about\\", \\"max_results\\": 2}}" }} }}] }}
 
 Tool result injection (what the harness adds next):
-- Tool reply: {{ "role": "tool", "tool_call_id": "call_1", "name": "search_site", "content": "<tool_result tool=\\"search_site\\">\\n{...json...}\\n</tool_result>" }}
+- Tool reply: {{ "role": "tool", "tool_call_id": "call_1", "name": "search_site", "content": "<tool_result tool=\\"search_site\\">\\n{{...json...}}\\n</tool_result>" }}
 - After that you send a normal assistant message that cites the tool result.
 
 Personality and guidance:
