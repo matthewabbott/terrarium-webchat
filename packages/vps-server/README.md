@@ -14,6 +14,7 @@ Lightweight Express + WebSocket relay that runs on the VPS. It gates visitor acc
 | `POST` | `/api/chat/:chatId/worker-state` | `x-service-token` | Worker reports per-chat queue/processing status. |
 | `GET` | `/api/chat/:chatId/worker-state` | access code or `x-service-token` | Fetch the latest worker state for a chat (UI fallback). |
 | `GET` | `/api/health` | access code in query | Relay + worker heartbeat status for the UI. |
+| `GET` | `/api/metrics` | `x-service-token` | Basic relay metrics (HTTP counts, latency avg, WS counts, log queue). |
 | `WS` | `/api/chat?chatId=…&accessCode=…` | access code in query | Live stream of chat messages and worker-state events. |
 | `WS` | `/api/worker/updates` | `x-service-token` header | Push channel that pings the worker when a visitor posts a new message. |
 

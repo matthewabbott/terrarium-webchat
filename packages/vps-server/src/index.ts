@@ -1,7 +1,8 @@
 import 'dotenv/config';
 import express, { NextFunction, Request, Response } from 'express';
 import { createServer } from 'node:http';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
+import { appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
@@ -49,6 +50,11 @@ const CONFIG = {
   rateLimitMaxPerIp: parseNumber(env.RATE_LIMIT_MAX_PER_IP, 60),
   rateLimitMaxPerChat: parseNumber(env.RATE_LIMIT_MAX_PER_CHAT, 120),
 } as const;
+
+const LOG_QUEUE_MAX = 1000;
+const LOG_QUEUE_BATCH_SIZE = 100;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const SOCKET_BACKPRESSURE_THRESHOLD_BYTES = 512 * 1024;
 
 if (CONFIG.logChatEvents) {
   mkdirSync(CONFIG.logDir, { recursive: true });
@@ -111,6 +117,25 @@ const chatWorkerStates = new Map<string, WorkerStatePayload>();
 const app = express();
 app.use(express.json({ limit: CONFIG.bodyLimit }));
 
+const metrics = {
+  httpRequests: 0,
+  httpErrorResponses: 0,
+  httpLatencyMsTotal: 0,
+  logQueueDropped: 0
+};
+
+app.use((req, res, next) => {
+  const start = Date.now();
+  res.on('finish', () => {
+    metrics.httpRequests += 1;
+    metrics.httpLatencyMsTotal += Date.now() - start;
+    if (res.statusCode >= 500) {
+      metrics.httpErrorResponses += 1;
+    }
+  });
+  next();
+});
+
 type RateBucket = { count: number; resetAt: number };
 const rateBucketsByIp = new Map<string, RateBucket>();
 const rateBucketsByChat = new Map<string, RateBucket>();
@@ -147,6 +172,37 @@ function rateLimitVisitor(req: Request, res: Response, next: NextFunction) {
 
 const apiRouter = express.Router();
 
+type PendingLog = { target: string; line: string };
+const logQueue: PendingLog[] = [];
+let flushPromise: Promise<void> | null = null;
+
+function scheduleLogFlush() {
+  if (flushPromise) return;
+  flushPromise = flushLogs()
+    .catch((error) => {
+      console.error('Failed to flush chat logs', error);
+    })
+    .finally(() => {
+      flushPromise = null;
+      if (logQueue.length > 0) {
+        scheduleLogFlush();
+      }
+    });
+}
+
+async function flushLogs() {
+  const batch = logQueue.splice(0, LOG_QUEUE_BATCH_SIZE);
+  const grouped = new Map<string, string[]>();
+  for (const entry of batch) {
+    const existing = grouped.get(entry.target) ?? [];
+    existing.push(entry.line);
+    grouped.set(entry.target, existing);
+  }
+  for (const [target, lines] of grouped) {
+    await appendFile(target, lines.join(''), 'utf8');
+  }
+}
+
 function logEvent(chatId: string, type: string, payload: Record<string, unknown>) {
   if (!CONFIG.logChatEvents) return;
   const entry = {
@@ -155,12 +211,14 @@ function logEvent(chatId: string, type: string, payload: Record<string, unknown>
     type,
     ...payload,
   };
-  try {
-    const target = path.join(CONFIG.logDir, `${chatId}.jsonl`);
-    appendFileSync(target, `${JSON.stringify(entry)}\n`, 'utf8');
-  } catch (error) {
-    console.error('Failed to write chat log', error);
+  const target = path.join(CONFIG.logDir, `${chatId}.jsonl`);
+  const line = `${JSON.stringify(entry)}\n`;
+  if (logQueue.length >= LOG_QUEUE_MAX) {
+    metrics.logQueueDropped += 1;
+    return;
   }
+  logQueue.push({ target, line });
+  scheduleLogFlush();
 }
 
 function recordWorkerHeartbeat() {
@@ -178,9 +236,16 @@ function broadcast(chatId: string, message: Message) {
   const sockets = connections.get(chatId);
   if (!sockets) return;
   for (const socket of sockets) {
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message));
+    if (socket.readyState !== WebSocket.OPEN) {
+      sockets.delete(socket);
+      continue;
     }
+    if (socket.bufferedAmount > SOCKET_BACKPRESSURE_THRESHOLD_BYTES) {
+      socket.terminate();
+      sockets.delete(socket);
+      continue;
+    }
+    socket.send(JSON.stringify(message));
   }
 }
 
@@ -226,9 +291,16 @@ function broadcastWorkerState(chatId: string, payload: WorkerStatePayload) {
     updatedAt: payload.updatedAt
   });
   for (const socket of sockets) {
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(message);
+    if (socket.readyState !== WebSocket.OPEN) {
+      sockets.delete(socket);
+      continue;
     }
+    if (socket.bufferedAmount > SOCKET_BACKPRESSURE_THRESHOLD_BYTES) {
+      socket.terminate();
+      sockets.delete(socket);
+      continue;
+    }
+    socket.send(message);
   }
 }
 
@@ -244,9 +316,16 @@ function broadcastAssistantChunk(chatId: string, content: string, done: boolean)
   };
   const serialized = JSON.stringify(payload);
   for (const socket of sockets) {
-    if (socket.readyState === WebSocket.OPEN) {
-      socket.send(serialized);
+    if (socket.readyState !== WebSocket.OPEN) {
+      sockets.delete(socket);
+      continue;
     }
+    if (socket.bufferedAmount > SOCKET_BACKPRESSURE_THRESHOLD_BYTES) {
+      socket.terminate();
+      sockets.delete(socket);
+      continue;
+    }
+    socket.send(serialized);
   }
 }
 
@@ -462,6 +541,34 @@ apiRouter.get('/health', (req: Request, res: Response) => {
   });
 });
 
+apiRouter.get('/metrics', (req: Request, res: Response) => {
+  const token = req.headers['x-service-token'];
+  if (token !== CONFIG.serviceToken) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  let chatConnectionsCount = 0;
+  for (const set of connections.values()) {
+    chatConnectionsCount += set.size;
+  }
+  const httpAvgLatencyMs =
+    metrics.httpRequests > 0 ? Math.round((metrics.httpLatencyMsTotal / metrics.httpRequests) * 100) / 100 : 0;
+  res.json({
+    http: {
+      requests: metrics.httpRequests,
+      errors: metrics.httpErrorResponses,
+      avgLatencyMs: httpAvgLatencyMs
+    },
+    ws: {
+      chatConnections: chatConnectionsCount,
+      workerConnections: workerSockets.size
+    },
+    logs: {
+      queueLength: logQueue.length,
+      dropped: metrics.logQueueDropped
+    }
+  });
+});
+
 const mountPoints = new Set<string>(['/api']);
 if (CONFIG.basePath) {
   mountPoints.add(`${CONFIG.basePath}/api`);
@@ -475,6 +582,21 @@ const wsServer = new WebSocketServer({ noServer: true });
 const chatWsPaths = new Set<string>(Array.from(mountPoints, (mount) => `${mount}/chat`));
 const workerWsPaths = new Set<string>(Array.from(mountPoints, (mount) => `${mount}/worker/updates`));
 const wsPaths = new Set<string>([...chatWsPaths, ...workerWsPaths]);
+type HeartbeatSocket = WebSocket & { isAlive?: boolean };
+
+const heartbeatTimer = setInterval(() => {
+  wsServer.clients.forEach((socket: HeartbeatSocket) => {
+    if (socket.isAlive === false) {
+      socket.terminate();
+      return;
+    }
+    socket.isAlive = false;
+    socket.ping();
+    if (socket.bufferedAmount > SOCKET_BACKPRESSURE_THRESHOLD_BYTES) {
+      socket.terminate();
+    }
+  });
+}, HEARTBEAT_INTERVAL_MS);
 
 server.on('upgrade', (request, socket, head) => {
   try {
@@ -492,6 +614,12 @@ server.on('upgrade', (request, socket, head) => {
 });
 
 wsServer.on('connection', (socket, request) => {
+  const tracked = socket as HeartbeatSocket;
+  tracked.isAlive = true;
+  tracked.on('pong', () => {
+    tracked.isAlive = true;
+  });
+
   const url = new URL(request.url ?? '', 'http://localhost');
   const pathname = url.pathname ?? '';
 
