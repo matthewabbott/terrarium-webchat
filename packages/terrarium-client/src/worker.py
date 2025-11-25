@@ -9,6 +9,7 @@ from contextlib import suppress
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Optional
+from asyncio import QueueFull
 
 from websockets.client import connect as ws_connect
 
@@ -80,6 +81,7 @@ class TerrariumWorker:
         worker_updates_url: Optional[str] = None,
         worker_ws_retry: float = 5.0,
         max_concurrent_chats: int = 2,
+        max_queue_size: int = 200,
         ) -> None:
         self.relay = relay
         self.agent = agent
@@ -99,13 +101,14 @@ class TerrariumWorker:
         self._worker_updates_task: Optional[asyncio.Task[None]] = None
         self._queue_worker: Optional[asyncio.Task[None]] = None
         self._queue_workers: List[asyncio.Task[None]] = []
-        self._chat_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._chat_queue: asyncio.Queue[str] = asyncio.Queue(max_queue_size)
         self._pending_chat_ids: set[str] = set()
         self._tool_executor = ToolExecutor()
         self._ws_connected: bool = False
         self._logger = ChatLogger(Path(chat_log_dir))
         self._log_assistant_chunks = log_assistant_chunks
         self._max_concurrent_chats = max(1, max_concurrent_chats)
+        self._max_queue_size = max_queue_size
 
     async def run_forever(self) -> None:
         logger.info("Worker started with poll interval %.1fs", self.poll_interval)
@@ -203,8 +206,11 @@ class TerrariumWorker:
     def _enqueue_chat(self, chat_id: str) -> None:
         if chat_id in self._pending_chat_ids:
             return
-        self._pending_chat_ids.add(chat_id)
-        self._chat_queue.put_nowait(chat_id)
+        try:
+            self._chat_queue.put_nowait(chat_id)
+            self._pending_chat_ids.add(chat_id)
+        except QueueFull:
+            logger.warning("Chat queue full (%d); dropping chat %s", self._max_queue_size, chat_id)
 
     async def _chat_queue_worker(self, worker_id: int = 0) -> None:
         while True:

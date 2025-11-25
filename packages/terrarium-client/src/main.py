@@ -35,6 +35,8 @@ class Settings:
     llm_probe_interval: float
     worker_updates_url: str
     worker_ws_retry: float
+    max_concurrent_chats: int
+    max_chat_queue_size: int
 
 
 def derive_worker_updates_url(api_base_url: str) -> str:
@@ -61,6 +63,8 @@ def load_settings() -> Settings:
     llm_probe_interval = float(os.environ.get("LLM_STATUS_POLL_INTERVAL_SECONDS", "180"))
     worker_updates_url = os.environ.get("WORKER_WS_URL")
     worker_ws_retry = float(os.environ.get("WORKER_WS_RETRY_SECONDS", "5"))
+    max_concurrent_chats = int(os.environ.get("MAX_CONCURRENT_CHATS", "2"))
+    max_chat_queue_size = int(os.environ.get("MAX_CHAT_QUEUE_SIZE", "200"))
 
     missing = [
         name
@@ -88,6 +92,8 @@ def load_settings() -> Settings:
         llm_probe_interval=llm_probe_interval,
         worker_updates_url=worker_updates_url or derive_worker_updates_url(api_base_url),
         worker_ws_retry=worker_ws_retry,
+        max_concurrent_chats=max_concurrent_chats,
+        max_chat_queue_size=max_chat_queue_size,
     )
 
 
@@ -117,6 +123,8 @@ async def main() -> None:
             llm_probe_interval=settings.llm_probe_interval,
             worker_updates_url=settings.worker_updates_url,
             worker_ws_retry=settings.worker_ws_retry,
+            max_concurrent_chats=settings.max_concurrent_chats,
+            max_queue_size=settings.max_chat_queue_size,
         )
 
         try:

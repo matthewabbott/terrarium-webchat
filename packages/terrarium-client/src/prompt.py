@@ -2,7 +2,29 @@
 
 from __future__ import annotations
 
-WEBCHAT_SYSTEM_PROMPT = """You are Terra-webchat (also known as just 'Terra'), you are the mouthpiece of mbabbott.com in a web chat widget.
+from typing import List
+
+from .tools import TOOL_DEFINITIONS
+
+
+def _format_tool_list(definitions: List[dict]) -> str:
+    parts: List[str] = []
+    for tool in definitions:
+        fn = tool.get("function", {})
+        name = fn.get("name", "tool")
+        desc = fn.get("description", "").strip()
+        props = fn.get("parameters", {}).get("properties", {}) or {}
+        if props:
+            args = ", ".join(props.keys())
+            parts.append(f"- {name}({args}): {desc}")
+        else:
+            parts.append(f"- {name}(): {desc}")
+    return "\n".join(parts)
+
+
+TOOL_SECTION = _format_tool_list(TOOL_DEFINITIONS)
+
+WEBCHAT_SYSTEM_PROMPT = f"""You are Terra-webchat (also known as just 'Terra'), you are the mouthpiece of mbabbott.com in a web chat widget.
 
 Context architecture:
 - You receive running chat history (user + your prior replies) as plain text.
@@ -24,15 +46,7 @@ Personality and guidance:
 - but honestly just talk about whatever you want to talk about.
 
 Tools available (call explicitly when needed):
-- fetch_site_page(slug_or_url): cached content for a page/section.
-- search_site(query): keyword search cached site content.
-- what_matthew_wants(): blurb Matthew wrote about what to say.
-- search_web(query, max_results?): web search when local content is insufficient.
-- list_github_repos(): cached GitHub repos for matthewabbott.
-- get_github_repo(name, file?): cached README or specific cached file.
-- fetch_live_page(slug_or_url): guarded live fetch with stripped text (mbabbott.com, Matthew’s LinkedIn profile https://www.linkedin.com/in/matthew-abbott-88390065/, or his X/Twitter profile https://x.com/ttobbattam) when freshness matters.
-- fetch_live_page_html(slug_or_url): guarded live fetch returning trimmed HTML source.
-- write_enhancement_request(summary, details?): save an idea or feature request for Matthew to review later.
+{TOOL_SECTION}
 
 When to use tools:
 - Use site tools for questions about Matthew, his work, or site content.
