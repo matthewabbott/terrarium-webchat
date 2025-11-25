@@ -36,6 +36,11 @@ WORKER_STALE_THRESHOLD_MS=60000  # optional; heartbeat freshness window for /api
 LOG_CHAT_EVENTS=true  # set to false to disable chat log writes
 LOG_DIR=/var/log/terrarium-chat  # optional; where JSONL chat logs are written when enabled
 LOG_ASSISTANT_CHUNKS=false  # optional; log streaming chunks when chat logging is on
+BODY_SIZE_LIMIT=256kb  # limit for JSON bodies
+MAX_MESSAGE_LENGTH=4000  # reject oversized chat messages
+RATE_LIMIT_WINDOW_MS=60000  # window for rate limiting
+RATE_LIMIT_MAX_PER_IP=60  # max requests per IP per window on visitor endpoints
+RATE_LIMIT_MAX_PER_CHAT=120  # max requests per chatId per window on visitor endpoints
 ```
 
 When `BASE_PATH` is set, HTTP routes live at `<BASE_PATH>/api/*` and the WebSocket listens at `<BASE_PATH>/api/chat`. Leave it empty for local dev.

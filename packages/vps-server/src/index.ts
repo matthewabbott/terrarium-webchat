@@ -1,22 +1,57 @@
 import 'dotenv/config';
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import { createServer } from 'node:http';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
 
-const CHAT_PASSWORD = process.env.CHAT_PASSWORD ?? 'terra-access';
-const SERVICE_TOKEN = process.env.SERVICE_TOKEN ?? 'super-secret-service-token';
-const PORT = Number(process.env.PORT ?? 4100);
-const BASE_PATH = (process.env.BASE_PATH ?? '').replace(/\/$/, '');
-const WORKER_STALE_THRESHOLD_MS = Number(process.env.WORKER_STALE_THRESHOLD_MS ?? 60_000);
-const LOG_CHAT_EVENTS = (process.env.LOG_CHAT_EVENTS ?? 'true').toLowerCase() === 'true';
-const LOG_DIR = LOG_CHAT_EVENTS ? process.env.LOG_DIR ?? path.join(process.cwd(), 'chat-logs') : null;
-const LOG_ASSISTANT_CHUNKS =
-  LOG_CHAT_EVENTS && (process.env.LOG_ASSISTANT_CHUNKS ?? 'false').toLowerCase() === 'true';
-if (LOG_DIR) {
-  mkdirSync(LOG_DIR, { recursive: true });
+type LogLevel = 'info' | 'warn' | 'error';
+
+const env = process.env;
+
+function parseBool(value: string | undefined, fallback: boolean): boolean {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'true') return true;
+  if (normalized === 'false') return false;
+  return fallback;
+}
+
+function parseNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function requireString(value: string | undefined, fallback: string, name: string): string {
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim();
+  }
+  if (!fallback) {
+    console.error(`Missing required env: ${name}`);
+    process.exit(1);
+  }
+  return fallback;
+}
+
+const CONFIG = {
+  chatPassword: requireString(env.CHAT_PASSWORD, 'terra-access', 'CHAT_PASSWORD'),
+  serviceToken: requireString(env.SERVICE_TOKEN, 'super-secret-service-token', 'SERVICE_TOKEN'),
+  port: parseNumber(env.PORT, 4100),
+  basePath: (env.BASE_PATH ?? '').replace(/\/$/, ''),
+  workerStaleThresholdMs: parseNumber(env.WORKER_STALE_THRESHOLD_MS, 60_000),
+  logChatEvents: parseBool(env.LOG_CHAT_EVENTS, true),
+  logDir: (env.LOG_DIR ?? path.join(process.cwd(), 'chat-logs')) as string,
+  logAssistantChunks: parseBool(env.LOG_ASSISTANT_CHUNKS, false),
+  bodyLimit: env.BODY_SIZE_LIMIT ?? '256kb',
+  maxMessageLength: parseNumber(env.MAX_MESSAGE_LENGTH, 4000),
+  rateLimitWindowMs: parseNumber(env.RATE_LIMIT_WINDOW_MS, 60_000),
+  rateLimitMaxPerIp: parseNumber(env.RATE_LIMIT_MAX_PER_IP, 60),
+  rateLimitMaxPerChat: parseNumber(env.RATE_LIMIT_MAX_PER_CHAT, 120),
+} as const;
+
+if (CONFIG.logChatEvents) {
+  mkdirSync(CONFIG.logDir, { recursive: true });
 }
 
 interface Message {
@@ -74,12 +109,46 @@ const workerSockets = new Set<WebSocket>();
 const chatWorkerStates = new Map<string, WorkerStatePayload>();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: CONFIG.bodyLimit }));
+
+type RateBucket = { count: number; resetAt: number };
+const rateBucketsByIp = new Map<string, RateBucket>();
+const rateBucketsByChat = new Map<string, RateBucket>();
+
+function getBucket(map: Map<string, RateBucket>, key: string): RateBucket {
+  const now = Date.now();
+  const existing = map.get(key);
+  if (!existing || existing.resetAt <= now) {
+    const bucket = { count: 0, resetAt: now + CONFIG.rateLimitWindowMs };
+    map.set(key, bucket);
+    return bucket;
+  }
+  return existing;
+}
+
+function rateLimitVisitor(req: Request, res: Response, next: NextFunction) {
+  const ip = req.ip ?? 'unknown';
+  const chatId = req.params.chatId ?? 'unknown';
+
+  const ipBucket = getBucket(rateBucketsByIp, ip);
+  if (ipBucket.count >= CONFIG.rateLimitMaxPerIp) {
+    return res.status(429).json({ error: 'Rate limit exceeded (ip)' });
+  }
+  ipBucket.count += 1;
+
+  const chatBucket = getBucket(rateBucketsByChat, chatId);
+  if (chatBucket.count >= CONFIG.rateLimitMaxPerChat) {
+    return res.status(429).json({ error: 'Rate limit exceeded (chat)' });
+  }
+  chatBucket.count += 1;
+
+  next();
+}
 
 const apiRouter = express.Router();
 
 function logEvent(chatId: string, type: string, payload: Record<string, unknown>) {
-  if (!LOG_DIR) return;
+  if (!CONFIG.logChatEvents) return;
   const entry = {
     timestamp: new Date().toISOString(),
     chatId,
@@ -87,7 +156,7 @@ function logEvent(chatId: string, type: string, payload: Record<string, unknown>
     ...payload,
   };
   try {
-    const target = path.join(LOG_DIR, `${chatId}.jsonl`);
+    const target = path.join(CONFIG.logDir, `${chatId}.jsonl`);
     appendFileSync(target, `${JSON.stringify(entry)}\n`, 'utf8');
   } catch (error) {
     console.error('Failed to write chat log', error);
@@ -181,14 +250,17 @@ function broadcastAssistantChunk(chatId: string, content: string, done: boolean)
   }
 }
 
-apiRouter.post('/chat/:chatId/messages', (req: Request, res: Response) => {
+apiRouter.post('/chat/:chatId/messages', rateLimitVisitor, (req: Request, res: Response) => {
   const { chatId } = req.params;
   const { content, accessCode } = req.body as { content?: string; accessCode?: string };
-  if (accessCode !== CHAT_PASSWORD) {
+  if (accessCode !== CONFIG.chatPassword) {
     return res.status(401).json({ error: 'Invalid access code' });
   }
   if (!content || typeof content !== 'string') {
     return res.status(400).json({ error: 'Message content required' });
+  }
+  if (content.length > CONFIG.maxMessageLength) {
+    return res.status(413).json({ error: 'Message too long' });
   }
 
   const message: Message = {
@@ -215,9 +287,9 @@ apiRouter.get('/chat/:chatId/messages', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const accessCode = (req.query.accessCode as string | undefined) ?? undefined;
   const token = req.headers['x-service-token'];
-  if (token === SERVICE_TOKEN) {
+  if (token === CONFIG.serviceToken) {
     recordWorkerHeartbeat();
-  } else if (accessCode !== CHAT_PASSWORD) {
+  } else if (accessCode !== CONFIG.chatPassword) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   res.json(ensureChat(chatId));
@@ -226,7 +298,7 @@ apiRouter.get('/chat/:chatId/messages', (req: Request, res: Response) => {
 apiRouter.post('/chat/:chatId/agent', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const token = req.headers['x-service-token'];
-  if (token !== SERVICE_TOKEN) {
+  if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   recordWorkerHeartbeat();
@@ -250,7 +322,7 @@ apiRouter.post('/chat/:chatId/agent', (req: Request, res: Response) => {
 apiRouter.post('/chat/:chatId/agent-chunk', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const token = req.headers['x-service-token'];
-  if (token !== SERVICE_TOKEN) {
+  if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   recordWorkerHeartbeat();
@@ -259,7 +331,7 @@ apiRouter.post('/chat/:chatId/agent-chunk', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Chunk content required' });
   }
   broadcastAssistantChunk(chatId, content, Boolean(done));
-  if (content && LOG_ASSISTANT_CHUNKS) {
+  if (content && CONFIG.logAssistantChunks && CONFIG.logChatEvents) {
     logEvent(chatId, 'assistant_chunk', { content, done: Boolean(done) });
   }
   res.json({ ok: true });
@@ -267,7 +339,7 @@ apiRouter.post('/chat/:chatId/agent-chunk', (req: Request, res: Response) => {
 
 apiRouter.get('/chats/open', (req: Request, res: Response) => {
   const token = req.headers['x-service-token'];
-  if (token !== SERVICE_TOKEN) {
+  if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   recordWorkerHeartbeat();
@@ -294,7 +366,7 @@ function normalizeComponentStatus(input: unknown, fallbackDetail: string): Compo
 
 apiRouter.post('/worker/status', (req: Request, res: Response) => {
   const token = req.headers['x-service-token'];
-  if (token !== SERVICE_TOKEN) {
+  if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   const body = req.body as WorkerStatusPayload;
@@ -310,7 +382,7 @@ const workerStateValues: WorkerStateValue[] = ['idle', 'queued', 'processing', '
 
 apiRouter.post('/chat/:chatId/worker-state', (req: Request, res: Response) => {
   const token = req.headers['x-service-token'];
-  if (token !== SERVICE_TOKEN) {
+  if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   const { chatId } = req.params;
@@ -327,7 +399,7 @@ apiRouter.get('/chat/:chatId/worker-state', (req: Request, res: Response) => {
   const { chatId } = req.params;
   const accessCode = (req.query.accessCode as string | undefined) ?? undefined;
   const token = req.headers['x-service-token'];
-  if (token !== SERVICE_TOKEN && accessCode !== CHAT_PASSWORD) {
+  if (token !== CONFIG.serviceToken && accessCode !== CONFIG.chatPassword) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   res.json(getWorkerState(chatId));
@@ -335,11 +407,11 @@ apiRouter.get('/chat/:chatId/worker-state', (req: Request, res: Response) => {
 
 apiRouter.get('/health', (req: Request, res: Response) => {
   const accessCode = (req.query.accessCode as string | undefined) ?? undefined;
-  if (accessCode !== CHAT_PASSWORD) {
+  if (accessCode !== CONFIG.chatPassword) {
     return res.status(401).json({ error: 'Invalid access code' });
   }
   const workerReady =
-    lastWorkerSeenAt !== null ? Date.now() - lastWorkerSeenAt <= WORKER_STALE_THRESHOLD_MS : false;
+    lastWorkerSeenAt !== null ? Date.now() - lastWorkerSeenAt <= CONFIG.workerStaleThresholdMs : false;
   const workerLastSeenIso = lastWorkerSeenAt ? new Date(lastWorkerSeenAt).toISOString() : null;
   const nowIso = new Date().toISOString();
   const workerDetail = workerReady
@@ -391,8 +463,8 @@ apiRouter.get('/health', (req: Request, res: Response) => {
 });
 
 const mountPoints = new Set<string>(['/api']);
-if (BASE_PATH) {
-  mountPoints.add(`${BASE_PATH}/api`);
+if (CONFIG.basePath) {
+  mountPoints.add(`${CONFIG.basePath}/api`);
 }
 for (const mount of mountPoints) {
   app.use(mount, apiRouter);
@@ -425,7 +497,7 @@ wsServer.on('connection', (socket, request) => {
 
   if (workerWsPaths.has(pathname)) {
     const token = request.headers['x-service-token'];
-    if (token !== SERVICE_TOKEN) {
+    if (token !== CONFIG.serviceToken) {
       socket.close(1008, 'Unauthorized');
       return;
     }
@@ -443,7 +515,7 @@ wsServer.on('connection', (socket, request) => {
 
   const chatId = url.searchParams.get('chatId');
   const accessCode = url.searchParams.get('accessCode');
-  if (!chatId || accessCode !== CHAT_PASSWORD) {
+  if (!chatId || accessCode !== CONFIG.chatPassword) {
     socket.close(1008, 'Unauthorized');
     return;
   }
@@ -459,6 +531,6 @@ wsServer.on('connection', (socket, request) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`REST chat relay listening on ${PORT}`);
+server.listen(CONFIG.port, () => {
+  console.log(`REST chat relay listening on ${CONFIG.port}`);
 });
