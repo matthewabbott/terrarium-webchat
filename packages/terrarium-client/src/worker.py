@@ -24,15 +24,16 @@ logger = logging.getLogger(__name__)
 
 
 class ChatLogger:
-    """Append-only JSONL logger for chat events."""
+    """Append-only JSONL logger for chat events with size-capped retention."""
 
-    def __init__(self, root: Path, max_queue: int = 1000) -> None:
+    def __init__(self, root: Path, max_queue: int = 1000, max_bytes: int = 1_000_000_000) -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
         self._queue: asyncio.Queue[Dict] = asyncio.Queue(maxsize=max_queue)
         self._dropped = 0
         # Fire-and-forget writer; loop already running when worker is constructed.
         self._task = asyncio.create_task(self._writer())
+        self._max_bytes = max_bytes
 
     async def _writer(self) -> None:
         while True:
@@ -44,10 +45,24 @@ class ChatLogger:
                 with path.open("a", encoding="utf-8") as handle:
                     json.dump(record, handle, ensure_ascii=False)
                     handle.write("\n")
+                await self._prune_if_needed()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Unable to write chat log entry: %s", exc)
             finally:
                 self._queue.task_done()
+
+    async def _prune_if_needed(self) -> None:
+        """Delete oldest log files until under max_bytes."""
+        try:
+            files = sorted(self.root.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+            total = sum(p.stat().st_size for p in files)
+            while total > self._max_bytes and files:
+                victim = files.pop(0)
+                size = victim.stat().st_size
+                victim.unlink(missing_ok=True)
+                total -= size
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Log pruning failed: %s", exc)
 
     def log(self, chat_id: str, event_type: str, payload: Dict) -> None:
         record = {
@@ -82,6 +97,7 @@ class TerrariumWorker:
         worker_ws_retry: float = 5.0,
         max_concurrent_chats: int = 2,
         max_queue_size: int = 200,
+        chat_log_max_bytes: int = 1_000_000_000,
         ) -> None:
         self.relay = relay
         self.agent = agent
@@ -105,7 +121,7 @@ class TerrariumWorker:
         self._pending_chat_ids: set[str] = set()
         self._tool_executor = ToolExecutor()
         self._ws_connected: bool = False
-        self._logger = ChatLogger(Path(chat_log_dir))
+        self._logger = ChatLogger(Path(chat_log_dir), max_bytes=chat_log_max_bytes)
         self._log_assistant_chunks = log_assistant_chunks
         self._max_concurrent_chats = max(1, max_concurrent_chats)
         self._max_queue_size = max_queue_size
