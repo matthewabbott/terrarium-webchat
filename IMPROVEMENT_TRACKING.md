@@ -32,7 +32,7 @@ Workstreams & Tasks
 - Status: TODO | Task: Worker logging efficiency: replace per-call file writes with a small bounded async log queue + drop counter to avoid event-loop stalls under load. DoD: load test shows stable latency; drops counted.
 
 5) Security Hardening (Joint, with ownership marked)
-- Status: TODO | Task: Worker↔relay auth upgrade (HMAC signing or mTLS). Owner: LLM-host to implement signing; VPS-side to verify. DoD: toggle-able via env; compatibility path maintained.
+- Status: DONE | Task: Worker↔relay auth upgrade (HMAC signing). Owner: LLM-host implemented signing; VPS-side verifies via optional HMAC. DoD: toggle-able via env; compatibility path maintained. (mTLS still optional future work.)
 - Status: TODO | Task: Abuse protection on public POST: optional CAPTCHA or lightweight challenge. Owner: VPS-side. DoD: feature flag; documented impact.
 
 Handover notes for VPS-side agent:
