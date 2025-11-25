@@ -147,3 +147,16 @@ The worker polls `/api/chats/open`, fetches messages per chat, calls terrarium-a
 
 - **Visitor access code (`CHAT_PASSWORD`)** – edit `/var/www/html/terrarium-server/.env`, then `pm2 restart terrarium-rest-chat` so the relay enforces the new code. Share it only with trusted users.
 - **Service token (`SERVICE_TOKEN`)** – update the same `.env`, restart the relay, then update `packages/terrarium-client/.env` on the LLM host to match before restarting the worker. This keeps `/api/chats/open`, `/api/chat/:chatId/agent`, and history endpoints limited to the trusted worker.
+
+## 7. Safer frontend deploy helper (optional)
+
+Use `scripts/deploy-terra-frontend.sh` to build and sync only the Terra assets without touching other site content. It defaults to:
+- Source: `/root/terrarium-webchat/packages/web-frontend/dist/`
+- Staging: `~/Programming/mbabbott-webpage/var/www/html/terra/`
+- Dest: `/var/www/html/terra/`
+
+Run with `sudo -E` so it preserves env overrides for ROOT/STAGING/DEST.
+
+## 8. Smoke tests
+
+Run `scripts/smoke-terra.sh` with `ACCESS_CODE` (and `SERVICE_TOKEN` for auth routes) to hit `/api/health`, `/api/chats/open`, and `/api/metrics` after deploys.
