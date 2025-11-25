@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from time import perf_counter
+import random
+from time import perf_counter, time
 from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlparse, urlunparse
 
 import httpx
-from httpx import HTTPStatusError, RequestError
+from httpx import HTTPStatusError, RequestError, TimeoutException
 
 from .context import Conversation
 
@@ -23,6 +25,10 @@ You are Terra-webchat (Terra), the mbabbott.com chat widget.
 
 class AgentClientError(Exception):
     """Raised when terrarium-agent does not return a usable response."""
+
+    def __init__(self, message: str, *, category: str = "unknown") -> None:
+        super().__init__(message)
+        self.category = category
 
 
 def _derive_health_url(api_url: str) -> str:
@@ -46,12 +52,20 @@ class AgentClient:
         timeout_seconds: float = 60.0,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         health_url: Optional[str] = None,
+        max_retries: int = 3,
+        circuit_breaker_failures: int = 3,
+        circuit_breaker_cooldown: float = 10.0,
     ) -> None:
         self.api_url = api_url
         self.model = model
         self.system_prompt = system_prompt
         self.health_url = health_url or _derive_health_url(api_url)
         self._client = httpx.AsyncClient(timeout=timeout_seconds)
+        self._max_retries = max(1, max_retries)
+        self._circuit_failures = circuit_breaker_failures
+        self._circuit_cooldown = circuit_breaker_cooldown
+        self._consecutive_failures = 0
+        self._circuit_open_until: Optional[float] = None
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -140,24 +154,132 @@ class AgentClient:
         return message, latency_ms
 
     async def _post(self, payload: dict) -> Tuple[dict, float]:
-        try:
+        async def send() -> Tuple[dict, float]:
             start = perf_counter()
             response = await self._client.post(self.api_url, json=payload)
             latency_ms = (perf_counter() - start) * 1000
             response.raise_for_status()
             return response.json(), latency_ms
-        except HTTPStatusError as exc:
-            logger.error("Agent HTTP error: %s", exc)
-            raise AgentClientError(f"Agent returned HTTP {exc.response.status_code}") from exc
-        except RequestError as exc:
-            logger.error("Agent request failed: %s", exc)
-            raise AgentClientError(str(exc)) from exc
+
+        return await self._execute_with_retries(send)
 
     async def _stream(
         self,
         payload: dict,
         on_chunk: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> Tuple[Dict, float]:
+        async def stream_once() -> Tuple[Dict, float]:
+            start = perf_counter()
+            content_parts: List[str] = []
+            tool_calls: List[Dict] = []
+
+            async with self._client.stream("POST", self.api_url, json=payload) as response:
+                try:
+                    response.raise_for_status()
+                except HTTPStatusError as exc:
+                    logger.error("Agent stream HTTP error: %s", exc)
+                    raise AgentClientError(
+                        f"Agent returned HTTP {exc.response.status_code}", category="http_error"
+                    ) from exc
+
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:") :].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        parsed = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = parsed.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    if delta.get("content"):
+                        content_parts.append(delta["content"])
+                        if on_chunk:
+                            await on_chunk(delta["content"])
+                    if delta.get("tool_calls"):
+                        for call in delta["tool_calls"]:
+                            existing = next((c for c in tool_calls if c.get("id") == call.get("id")), None)
+                            if existing:
+                                existing_fn = existing.setdefault("function", {})
+                                delta_fn = call.get("function", {})
+                                if "arguments" in delta_fn:
+                                    existing_fn["arguments"] = existing_fn.get("arguments", "") + delta_fn["arguments"]
+                            else:
+                                tool_calls.append(call)
+
+            latency_ms = (perf_counter() - start) * 1000
+            message: Dict[str, object] = {"role": "assistant", "content": "".join(content_parts)}
+            if tool_calls:
+                message["tool_calls"] = tool_calls
+            return message, latency_ms
+
+        return await self._execute_with_retries(stream_once, is_stream=True)
+
+    async def _execute_with_retries(
+        self,
+        func: Callable[[], Awaitable[Tuple[Dict, float]]],
+        *,
+        is_stream: bool = False,
+    ) -> Tuple[Dict, float]:
+        now = time()
+        if self._circuit_open_until and now < self._circuit_open_until:
+            raise AgentClientError("Agent circuit is open; backing off", category="circuit_open")
+        for attempt in range(self._max_retries):
+            try:
+                result = await func()
+                self._consecutive_failures = 0
+                self._circuit_open_until = None
+                return result
+            except AgentClientError as exc:
+                retryable = exc.category in {"timeout", "network", "server_error"}
+                if not retryable or attempt == self._max_retries - 1:
+                    self._record_failure()
+                    raise
+                self._record_failure()
+                backoff = min(2 ** attempt, 8) + random.random()
+                logger.warning(
+                    "Agent %s attempt %d/%d failed (%s); backing off %.1fs",
+                    "stream" if is_stream else "request",
+                    attempt + 1,
+                    self._max_retries,
+                    exc.category,
+                    backoff,
+                )
+                await asyncio.sleep(backoff)
+            except HTTPStatusError as exc:
+                category = "server_error" if exc.response.status_code >= 500 else "http_error"
+                self._record_failure()
+                raise AgentClientError(f"Agent returned HTTP {exc.response.status_code}", category=category) from exc
+            except TimeoutException as exc:
+                self._record_failure()
+                if attempt == self._max_retries - 1:
+                    raise AgentClientError("Agent request timed out", category="timeout") from exc
+                backoff = min(2 ** attempt, 8) + random.random()
+                logger.warning("Agent timeout; retrying in %.1fs", backoff)
+                await asyncio.sleep(backoff)
+            except RequestError as exc:
+                self._record_failure()
+                if attempt == self._max_retries - 1:
+                    raise AgentClientError(str(exc), category="network") from exc
+                backoff = min(2 ** attempt, 8) + random.random()
+                logger.warning("Agent network error; retrying in %.1fs", backoff)
+                await asyncio.sleep(backoff)
+
+        raise AgentClientError("Agent retries exhausted", category="unknown")
+
+    def _record_failure(self) -> None:
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= self._circuit_failures:
+            self._circuit_open_until = time() + self._circuit_cooldown
+            logger.warning(
+                "Agent circuit opened for %.1fs after %d consecutive failures",
+                self._circuit_cooldown,
+                self._consecutive_failures,
+            )
         start = perf_counter()
         content_parts: List[str] = []
         tool_calls: List[Dict] = []
