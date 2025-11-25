@@ -2,10 +2,10 @@ import 'dotenv/config';
 import express, { NextFunction, Request, Response } from 'express';
 import { createServer } from 'node:http';
 import { mkdirSync } from 'node:fs';
-import { appendFile } from 'node:fs/promises';
+import { appendFile, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHmac, timingSafeEqual } from 'node:crypto';
 import { format as formatDate } from 'date-fns';
 
 type LogLevel = 'info' | 'warn' | 'error';
@@ -245,12 +245,12 @@ async function flushLogs() {
 
 async function pruneLogs() {
   try {
-    const files = (await fsPromises.readdir(CONFIG.logDir))
+    const files = (await readdir(CONFIG.logDir))
       .filter((f) => f.endsWith('.jsonl'))
       .map((name) => path.join(CONFIG.logDir, name));
     const stats = await Promise.all(
       files.map(async (f) => {
-        const s = await fsPromises.stat(f);
+        const s = await stat(f);
         return { file: f, mtime: s.mtimeMs, size: s.size };
       })
     );
@@ -258,7 +258,7 @@ async function pruneLogs() {
     const sorted = stats.sort((a, b) => a.mtime - b.mtime);
     while (total > LOG_MAX_BYTES && sorted.length) {
       const victim = sorted.shift()!;
-      await fsPromises.unlink(victim.file).catch(() => {});
+      await unlink(victim.file).catch(() => {});
       total -= victim.size;
     }
   } catch (error) {
