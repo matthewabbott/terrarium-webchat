@@ -39,6 +39,9 @@ function requireString(value: string | undefined, fallback: string, name: string
 const CONFIG = {
   chatPassword: requireString(env.CHAT_PASSWORD, 'terra-access', 'CHAT_PASSWORD'),
   serviceToken: requireString(env.SERVICE_TOKEN, 'super-secret-service-token', 'SERVICE_TOKEN'),
+  hmacEnabled: parseBool(env.HMAC_ENABLED, false),
+  hmacSecret: env.HMAC_SECRET ?? '',
+  hmacMaxSkewSeconds: parseNumber(env.HMAC_MAX_SKEW_SECONDS, 300),
   port: parseNumber(env.PORT, 4100),
   basePath: (env.BASE_PATH ?? '').replace(/\/$/, ''),
   workerStaleThresholdMs: parseNumber(env.WORKER_STALE_THRESHOLD_MS, 60_000),
@@ -176,6 +179,40 @@ const apiRouter = express.Router();
 type PendingLog = { target: string; line: string };
 const logQueue: PendingLog[] = [];
 let flushPromise: Promise<void> | null = null;
+const NONCE_CACHE = new Map<string, number>();
+const NONCE_TTL_MS = 5 * 60 * 1000;
+
+function verifyHmac(req: Request, bodyString: string): boolean {
+  if (!CONFIG.hmacEnabled) return true;
+  const signature = req.headers['x-signature'];
+  const tsHeader = req.headers['x-signature-ts'];
+  if (!signature || !tsHeader || typeof signature !== 'string' || typeof tsHeader !== 'string') {
+    return false;
+  }
+  const ts = Number(tsHeader);
+  if (!Number.isFinite(ts)) return false;
+  const now = Math.floor(Date.now() / 1000);
+  if (Math.abs(now - ts) > CONFIG.hmacMaxSkewSeconds) return false;
+  const nonce = (req.headers['x-signature-nonce'] as string | undefined) ?? '';
+  const nonceKey = nonce ? `${nonce}:${tsHeader}` : '';
+  if (nonceKey) {
+    const expires = Date.now() + NONCE_TTL_MS;
+    if (NONCE_CACHE.has(nonceKey)) return false;
+    NONCE_CACHE.set(nonceKey, expires);
+  }
+  // purge expired nonces occasionally
+  if (NONCE_CACHE.size > 500) {
+    const nowMs = Date.now();
+    for (const [k, v] of NONCE_CACHE.entries()) {
+      if (v < nowMs) NONCE_CACHE.delete(k);
+    }
+  }
+  const method = (req.method ?? 'GET').toUpperCase();
+  const parsedUrl = new URL(req.originalUrl, `http://localhost`);
+  const payload = [method, parsedUrl.pathname, tsHeader, bodyString].join('\n');
+  const expected = createHmac('sha256', CONFIG.hmacSecret).update(payload).digest('hex');
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(signature));
+}
 
 function scheduleLogFlush() {
   if (flushPromise) return;
@@ -369,6 +406,9 @@ apiRouter.get('/chat/:chatId/messages', (req: Request, res: Response) => {
   const accessCode = (req.query.accessCode as string | undefined) ?? undefined;
   const token = req.headers['x-service-token'];
   if (token === CONFIG.serviceToken) {
+    if (!verifyHmac(req, '')) {
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
     recordWorkerHeartbeat();
   } else if (accessCode !== CONFIG.chatPassword) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -382,6 +422,10 @@ apiRouter.post('/chat/:chatId/agent', (req: Request, res: Response) => {
   if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+   const bodyString = JSON.stringify(req.body ?? {});
+   if (!verifyHmac(req, bodyString)) {
+     return res.status(401).json({ error: 'Invalid signature' });
+   }
   recordWorkerHeartbeat();
   const { content } = req.body as { content?: string };
   if (!content || typeof content !== 'string') {
@@ -406,6 +450,10 @@ apiRouter.post('/chat/:chatId/agent-chunk', (req: Request, res: Response) => {
   if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  const bodyString = JSON.stringify(req.body ?? {});
+  if (!verifyHmac(req, bodyString)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
   recordWorkerHeartbeat();
   const { content, done } = req.body as { content?: string; done?: boolean };
   if (typeof content !== 'string') {
@@ -422,6 +470,9 @@ apiRouter.get('/chats/open', (req: Request, res: Response) => {
   const token = req.headers['x-service-token'];
   if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (!verifyHmac(req, '')) {
+    return res.status(401).json({ error: 'Invalid signature' });
   }
   recordWorkerHeartbeat();
   res.json({ chatIds: Array.from(chats.keys()) });
@@ -450,6 +501,10 @@ apiRouter.post('/worker/status', (req: Request, res: Response) => {
   if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
+  const bodyString = JSON.stringify(req.body ?? {});
+  if (!verifyHmac(req, bodyString)) {
+    return res.status(401).json({ error: 'Invalid signature' });
+  }
   const body = req.body as WorkerStatusPayload;
   workerStatus = {
     agentApi: normalizeComponentStatus(body?.agentApi, 'Awaiting agent health data'),
@@ -465,6 +520,10 @@ apiRouter.post('/chat/:chatId/worker-state', (req: Request, res: Response) => {
   const token = req.headers['x-service-token'];
   if (token !== CONFIG.serviceToken) {
     return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const bodyString = JSON.stringify(req.body ?? {});
+  if (!verifyHmac(req, bodyString)) {
+    return res.status(401).json({ error: 'Invalid signature' });
   }
   const { chatId } = req.params;
   const { state, detail } = req.body as { state?: WorkerStateValue; detail?: string | null };
