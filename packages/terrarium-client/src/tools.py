@@ -163,25 +163,7 @@ TOOL_DEFINITIONS: List[ToolDefinition] = [
     {
         "type": "function",
         "function": {
-            "name": "fetch_live_page_source",
-            "description": "Fetch a live page (guarded) and return trimmed HTML source.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "slug_or_url": {
-                        "type": "string",
-                        "description": "Slug like 'projects' or full URL (must be allowlisted).",
-                    }
-                },
-                "required": ["slug_or_url"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_live_page_source",
+            "name": "fetch_live_page_html",
             "description": "Fetch a live page (guarded) and return trimmed HTML source.",
             "parameters": {
                 "type": "object",
@@ -279,22 +261,27 @@ class ToolExecutor:
 
     async def execute(self, tool_name: str, arguments: Dict[str, Any]) -> str:
         if tool_name == "fetch_site_page":
-            return self._fetch_site_page(arguments)
-        if tool_name == "search_site":
-            return self._search_site(arguments)
-        if tool_name == "what_matthew_wants":
-            return self._what_matthew_wants()
-        if tool_name == "search_web":
-            return await self._search_web(arguments)
-        if tool_name == "list_github_repos":
-            return self._list_github_repos()
-        if tool_name == "get_github_repo":
-            return self._get_github_repo(arguments)
-        if tool_name == "fetch_live_page":
-            return await self._fetch_live_page(arguments)
-        if tool_name == "fetch_live_page_source":
-            return await self._fetch_live_page(arguments, return_source=True)
-        return json.dumps({"error": f"Unknown tool: {tool_name}"})
+            result = self._fetch_site_page(arguments)
+        elif tool_name == "search_site":
+            result = self._search_site(arguments)
+        elif tool_name == "what_matthew_wants":
+            result = self._what_matthew_wants()
+        elif tool_name == "search_web":
+            result = await self._search_web(arguments)
+        elif tool_name == "list_github_repos":
+            result = self._list_github_repos()
+        elif tool_name == "get_github_repo":
+            result = self._get_github_repo(arguments)
+        elif tool_name == "fetch_live_page":
+            result = await self._fetch_live_page(arguments)
+        elif tool_name in {"fetch_live_page_source", "fetch_live_page_html"}:
+            result = await self._fetch_live_page(arguments, return_source=True)
+        elif tool_name == "write_enhancement_request":
+            result = self._write_enhancement_request(arguments)
+        else:
+            result = json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+        return f'<tool_result tool="{tool_name}">\n{result}\n</tool_result>'
 
     def _read_json_file(self, path: Optional[Path]) -> Optional[Dict[str, Any]]:
         if not path:
