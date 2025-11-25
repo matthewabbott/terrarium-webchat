@@ -38,6 +38,9 @@ class Settings:
     max_concurrent_chats: int
     max_chat_queue_size: int
     max_log_bytes: int
+    hmac_enabled: bool
+    hmac_secret: str
+    hmac_max_skew_seconds: int
 
 
 def derive_worker_updates_url(api_base_url: str) -> str:
@@ -67,6 +70,9 @@ def load_settings() -> Settings:
     max_concurrent_chats = int(os.environ.get("MAX_CONCURRENT_CHATS", "2"))
     max_chat_queue_size = int(os.environ.get("MAX_CHAT_QUEUE_SIZE", "200"))
     max_log_bytes = int(os.environ.get("MAX_LOG_BYTES", str(1_000_000_000)))
+    hmac_enabled = (os.environ.get("HMAC_ENABLED") or "false").lower() == "true"
+    hmac_secret = os.environ.get("HMAC_SECRET", "")
+    hmac_max_skew_seconds = int(os.environ.get("HMAC_MAX_SKEW_SECONDS", "300"))
 
     missing = [
         name
@@ -97,6 +103,9 @@ def load_settings() -> Settings:
         max_concurrent_chats=max_concurrent_chats,
         max_chat_queue_size=max_chat_queue_size,
         max_log_bytes=max_log_bytes,
+        hmac_enabled=hmac_enabled,
+        hmac_secret=hmac_secret,
+        hmac_max_skew_seconds=hmac_max_skew_seconds,
     )
 
 
@@ -107,6 +116,9 @@ async def main() -> None:
     async with RelayClient(
         api_base_url=settings.api_base_url,
         service_token=settings.service_token,
+        hmac_secret=settings.hmac_secret,
+        hmac_enabled=settings.hmac_enabled,
+        hmac_max_skew_seconds=settings.hmac_max_skew_seconds,
     ) as relay_client:
         await relay_client.ping()
         agent_client = AgentClient(
