@@ -25,9 +25,27 @@ logger = logging.getLogger(__name__)
 class ChatLogger:
     """Append-only JSONL logger for chat events."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, max_queue: int = 1000) -> None:
         self.root = root
         self.root.mkdir(parents=True, exist_ok=True)
+        self._queue: asyncio.Queue[Dict] = asyncio.Queue(maxsize=max_queue)
+        self._dropped = 0
+        # Fire-and-forget writer; loop already running when worker is constructed.
+        self._task = asyncio.create_task(self._writer())
+
+    async def _writer(self) -> None:
+        while True:
+            record = await self._queue.get()
+            try:
+                path = self.root / f"{record.get('chatId', 'unknown')}.jsonl"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with path.open("a", encoding="utf-8") as handle:
+                    json.dump(record, handle, ensure_ascii=False)
+                    handle.write("\n")
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("Unable to write chat log entry: %s", exc)
+            finally:
+                self._queue.task_done()
 
     def log(self, chat_id: str, event_type: str, payload: Dict) -> None:
         record = {
@@ -37,13 +55,11 @@ class ChatLogger:
             "payload": payload,
         }
         try:
-            path = self.root / f"{chat_id}.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as handle:
-                json.dump(record, handle, ensure_ascii=False)
-                handle.write("\n")
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("Unable to write chat log entry: %s", exc)
+            self._queue.put_nowait(record)
+        except asyncio.QueueFull:
+            self._dropped += 1
+            if self._dropped % 100 == 1:
+                logger.debug("Chat log queue full; dropped %d entries", self._dropped)
 
 
 class TerrariumWorker:
@@ -164,7 +180,7 @@ class TerrariumWorker:
             self._llm_status.mark("offline", detail=str(exc))
             response = "I had trouble talking to Terra's core service. Please try again shortly."
             worker_state = "error"
-            worker_state_detail = str(exc)
+            worker_state_detail = f"{exc.category}: {exc}"
         except Exception as exc:  # noqa: BLE001
             logger.exception("Unexpected error while generating a response: %s", exc)
             self._llm_status.mark("offline", detail=str(exc))
