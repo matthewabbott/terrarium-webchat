@@ -46,6 +46,8 @@ type AssistantChunkEvent = {
   emittedAt: string;
 };
 
+type ParsedContent = { body: string; thoughts: string[] };
+
 const formatter = new Intl.DateTimeFormat(undefined, {
   hour: '2-digit',
   minute: '2-digit'
@@ -163,6 +165,17 @@ function generateChatId(): string {
   return Math.random().toString(36).slice(2, 12);
 }
 
+function parseContent(raw: string): ParsedContent {
+  if (!raw) return { body: '', thoughts: [] };
+  const thoughts: string[] = [];
+  let body = raw;
+  body = body.replace(/<think>([\s\S]*?)<\/think>/gi, (_, inner: string) => {
+    thoughts.push(inner.trim());
+    return '';
+  });
+  return { body: body.trim(), thoughts };
+}
+
 export function App() {
   const [accessCode, setAccessCode] = useState(() => sessionStorage.getItem('terrarium-access-code') ?? '');
   const [chat, setChat] = useState<Chat | null>(() => {
@@ -185,6 +198,8 @@ export function App() {
     const stored = localStorage.getItem('terra-theme');
     return stored === 'dark';
   });
+  const [expandedThoughts, setExpandedThoughts] = useState<Set<string>>(new Set());
+  const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
   const chainPanelId = 'terra-status-panel';
 
   const messageIds = useRef<Set<string>>(new Set());
@@ -229,6 +244,14 @@ export function App() {
 
   const handleChainToggle = useCallback(() => {
     setIsChainExpanded((prev) => !prev);
+  }, []);
+
+  const handleLogScroll = useCallback(() => {
+    const container = messageContainerRef.current;
+    if (!container) return;
+    const threshold = 40;
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
+    setIsPinnedToBottom(atBottom);
   }, []);
 
   const pushSystemNotice = useCallback(
@@ -345,10 +368,12 @@ export function App() {
   }, []);
 
   const scrollToTop = useCallback(() => {
+    setIsPinnedToBottom(false);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
   const scrollToBottom = useCallback(() => {
+    setIsPinnedToBottom(true);
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }, []);
@@ -536,17 +561,17 @@ export function App() {
   }, [chat, accessCode, handleAddMessage, clearSystemNoticeKey, handleRelayFailure]);
 
   useEffect(() => {
-    if (!messageContainerRef.current) return;
+    if (!isPinnedToBottom || !messageContainerRef.current) return;
     messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, isPinnedToBottom]);
 
   useEffect(() => {
     if (!assistantStreaming && !assistantStream) return;
-    if (!messageContainerRef.current) return;
+    if (!isPinnedToBottom || !messageContainerRef.current) return;
     messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [assistantStream, assistantStreaming]);
+  }, [assistantStream, assistantStreaming, isPinnedToBottom]);
 
   const autoResizeTextarea = useCallback(() => {
     if (!textareaRef.current) return;
@@ -611,6 +636,19 @@ export function App() {
     }
     return messages.map((msg) => {
       const variant = msg.sender === 'Visitor' ? 'visitor' : msg.sender === 'System' ? 'system' : 'terra';
+      const parsed = parseContent(msg.content);
+      const hasThoughts = parsed.thoughts.length > 0;
+      const isExpanded = expandedThoughts.has(msg.id);
+      const toggleThoughts = () =>
+        setExpandedThoughts((prev) => {
+          const next = new Set(prev);
+          if (next.has(msg.id)) {
+            next.delete(msg.id);
+          } else {
+            next.add(msg.id);
+          }
+          return next;
+        });
       return (
         <div key={msg.id} className={`message message--${variant}`}>
           {msg.sender !== 'System' && (
@@ -619,11 +657,25 @@ export function App() {
               <time>{formatter.format(new Date(msg.createdAt))}</time>
             </div>
           )}
-          <p>{msg.content}</p>
+          <p>{parsed.body || (hasThoughts ? '(hidden thought only)' : '')}</p>
+          {hasThoughts && (
+            <div className={`message__thoughts ${isExpanded ? 'message__thoughts--open' : ''}`}>
+              <button type="button" onClick={toggleThoughts} aria-expanded={isExpanded}>
+                {isExpanded ? 'Hide thoughts' : `Show thoughts (${parsed.thoughts.length})`}
+              </button>
+              {isExpanded && (
+                <div className="message__thoughts-body">
+                  {parsed.thoughts.map((thought, idx) => (
+                    <pre key={idx}>{thought}</pre>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       );
     });
-  }, [messages]);
+  }, [messages, expandedThoughts]);
 
   const composerPlaceholder = useMemo(() => {
     if (!messages.length) {
@@ -799,15 +851,15 @@ export function App() {
             <div className="chat-meta">
               <span>Chat ID: {chat.id.slice(0, 8)}</span>
               <span className={`socket-indicator socket-indicator--${socketStatus}`}>{socketStatus}</span>
-              <div className="scroll-controls">
-                <button type="button" onClick={scrollToTop}>Top</button>
-                <button type="button" onClick={scrollToBottom}>Bottom</button>
-              </div>
               <button className="reset-btn" type="button" onClick={resetChat}>
                 Reset chat
               </button>
             </div>
-            <div className="log" ref={messageContainerRef} aria-live="polite">
+            <div className="scroll-controls">
+              <button type="button" onClick={scrollToBottom}>Bottom</button>
+              {!isPinnedToBottom && <span className="scroll-controls__status">Auto-scroll paused</span>}
+            </div>
+            <div className="log" ref={messageContainerRef} aria-live="polite" onScroll={handleLogScroll}>
               {messageList}
               {awaitingTerra && (
                 <div className="message message--system">
@@ -825,10 +877,27 @@ export function App() {
                     <span>Terra (streaming)</span>
                     <time>{formatter.format(new Date())}</time>
                   </div>
-                  <p>{assistantStream}</p>
+                  {(() => {
+                    const parsed = parseContent(assistantStream);
+                    return (
+                      <>
+                        <p>{parsed.body || (parsed.thoughts.length ? '(thinking…)' : '')}</p>
+                        {parsed.thoughts.length > 0 && (
+                          <p className="message__thoughts-inline">
+                            Thought chunk (hidden) — will appear once the message finishes.
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
               <div ref={bottomRef} />
+            </div>
+            <div className="scroll-controls">
+              <button type="button" onClick={scrollToTop}>Top</button>
+              <button type="button" onClick={scrollToBottom}>Bottom</button>
+              {!isPinnedToBottom && <span className="scroll-controls__status">Auto-scroll paused</span>}
             </div>
             <form className="composer" onSubmit={handleSendMessage}>
               <textarea

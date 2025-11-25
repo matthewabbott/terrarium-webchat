@@ -661,6 +661,8 @@ button[disabled] {
   display: flex;
   gap: 0.5rem;
   align-items: center;
+  justify-content: flex-end;
+  margin-top: 0.35rem;
 }
 
 .scroll-controls button {
@@ -670,6 +672,11 @@ button[disabled] {
   border-radius: 8px;
   padding: 0.35rem 0.75rem;
   cursor: pointer;
+}
+
+.scroll-controls__status {
+  font-size: 0.85rem;
+  color: var(--text-muted);
 }
 
 .log {
@@ -702,6 +709,50 @@ button[disabled] {
   align-self: flex-start;
   border-color: var(--message-terra-border);
   background: var(--message-terra-bg);
+}
+
+.message__thoughts {
+  margin-top: 0.5rem;
+  border: 1px dashed var(--border-primary);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg-quaternary);
+}
+
+.message__thoughts button {
+  background: transparent;
+  border: none;
+  color: var(--text-tertiary);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+}
+
+.message__thoughts-body {
+  margin-top: 0.5rem;
+  border-top: 1px solid var(--border-primary);
+  padding-top: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.message__thoughts-body pre {
+  margin: 0;
+  white-space: pre-wrap;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 0.9rem;
+  color: var(--text-tertiary);
+}
+
+.message__thoughts--open {
+  box-shadow: var(--shadow-sm);
+}
+
+.message__thoughts-inline {
+  margin: 0.25rem 0 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
 }
 
 .message--streaming {
