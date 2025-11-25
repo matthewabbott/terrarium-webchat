@@ -37,7 +37,8 @@ class ChatLogger:
         while True:
             record = await self._queue.get()
             try:
-                path = self.root / f"{record.get('chatId', 'unknown')}.jsonl"
+                date_prefix = datetime.utcnow().strftime("%Y%m%d")
+                path = self.root / f"{date_prefix}-{record.get('chatId', 'unknown')}.jsonl"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with path.open("a", encoding="utf-8") as handle:
                     json.dump(record, handle, ensure_ascii=False)
@@ -78,6 +79,7 @@ class TerrariumWorker:
         llm_probe_interval: float = 180.0,
         worker_updates_url: Optional[str] = None,
         worker_ws_retry: float = 5.0,
+        max_concurrent_chats: int = 2,
         ) -> None:
         self.relay = relay
         self.agent = agent
@@ -96,17 +98,22 @@ class TerrariumWorker:
         self._status_task: Optional[asyncio.Task[None]] = None
         self._worker_updates_task: Optional[asyncio.Task[None]] = None
         self._queue_worker: Optional[asyncio.Task[None]] = None
+        self._queue_workers: List[asyncio.Task[None]] = []
         self._chat_queue: asyncio.Queue[str] = asyncio.Queue()
         self._pending_chat_ids: set[str] = set()
         self._tool_executor = ToolExecutor()
         self._ws_connected: bool = False
         self._logger = ChatLogger(Path(chat_log_dir))
         self._log_assistant_chunks = log_assistant_chunks
+        self._max_concurrent_chats = max(1, max_concurrent_chats)
 
     async def run_forever(self) -> None:
         logger.info("Worker started with poll interval %.1fs", self.poll_interval)
         self._status_task = asyncio.create_task(self._status_probe_loop())
-        self._queue_worker = asyncio.create_task(self._chat_queue_worker())
+        self._queue_workers = [
+            asyncio.create_task(self._chat_queue_worker(worker_id=i))
+            for i in range(self._max_concurrent_chats)
+        ]
         if self.worker_updates_url:
             self._worker_updates_task = asyncio.create_task(self._worker_updates_loop())
         try:
@@ -117,7 +124,7 @@ class TerrariumWorker:
                     logger.exception("Worker tick failed: %s", exc)
                 await asyncio.sleep(self.poll_interval)
         finally:
-            tasks = [self._status_task, self._queue_worker, self._worker_updates_task]
+            tasks = [self._status_task, self._worker_updates_task, *self._queue_workers]
             for task in tasks:
                 if task is None:
                     continue
@@ -199,13 +206,13 @@ class TerrariumWorker:
         self._pending_chat_ids.add(chat_id)
         self._chat_queue.put_nowait(chat_id)
 
-    async def _chat_queue_worker(self) -> None:
+    async def _chat_queue_worker(self, worker_id: int = 0) -> None:
         while True:
             chat_id = await self._chat_queue.get()
             try:
                 await self._process_chat(chat_id)
             except Exception as exc:  # noqa: BLE001
-                logger.exception("Queue worker failed for chat %s: %s", chat_id, exc)
+                logger.exception("Queue worker %s failed for chat %s: %s", worker_id, chat_id, exc)
             finally:
                 self._pending_chat_ids.discard(chat_id)
                 self._chat_queue.task_done()

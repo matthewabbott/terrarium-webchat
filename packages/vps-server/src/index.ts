@@ -6,6 +6,7 @@ import { appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomUUID } from 'node:crypto';
+import { format as formatDate } from 'date-fns';
 
 type LogLevel = 'info' | 'warn' | 'error';
 
@@ -211,7 +212,8 @@ function logEvent(chatId: string, type: string, payload: Record<string, unknown>
     type,
     ...payload,
   };
-  const target = path.join(CONFIG.logDir, `${chatId}.jsonl`);
+  const datePrefix = formatDate(new Date(), 'yyyyMMdd');
+  const target = path.join(CONFIG.logDir, `${datePrefix}-${chatId}.jsonl`);
   const line = `${JSON.stringify(entry)}\n`;
   if (logQueue.length >= LOG_QUEUE_MAX) {
     metrics.logQueueDropped += 1;
