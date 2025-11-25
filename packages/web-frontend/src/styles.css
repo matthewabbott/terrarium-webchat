@@ -679,6 +679,17 @@ button[disabled] {
   color: var(--text-muted);
 }
 
+.scroll-controls__badge {
+  border: none;
+  background: var(--accent);
+  color: var(--button-primary-text);
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+
 .log {
   flex: 1;
   min-height: 0;

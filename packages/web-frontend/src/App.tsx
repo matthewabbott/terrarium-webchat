@@ -53,6 +53,7 @@ const formatter = new Intl.DateTimeFormat(undefined, {
   minute: '2-digit'
 });
 const HEALTH_POLL_INTERVAL_MS = 30_000;
+const MAX_MESSAGE_HISTORY = 200;
 const CONNECT_PROMPT = 'Send your first message to connect with Terra';
 const STATUS_LABELS: Record<StatusLevel, string> = {
   online: 'Online',
@@ -104,6 +105,31 @@ function buildWsUrl(path: string, params: Record<string, string>): string {
   const url = new URL(normalized, WS_BASE);
   Object.entries(params).forEach(([key, value]) => url.searchParams.set(key, value));
   return url.toString();
+}
+
+async function fetchWithRetry(url: string, init: RequestInit, attempts = 3): Promise<Response> {
+  let lastError: unknown = null;
+  let lastStatus: number | null = null;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const response = await fetch(url, init);
+      lastStatus = response.status;
+      if (!response.ok) {
+        lastError = Object.assign(new Error(`Request failed: ${response.status}`), { status: response.status });
+        throw lastError;
+      }
+      return response;
+    } catch (error) {
+      lastError = error;
+      if (i === attempts - 1) {
+        break;
+      }
+      const backoff = Math.min(1000 * 2 ** i, 5000) + Math.random() * 300;
+      await new Promise((resolve) => setTimeout(resolve, backoff));
+    }
+  }
+  const fallbackError = Object.assign(new Error('Request failed after retries'), { status: lastStatus });
+  throw (lastError as Error & { status?: number }) ?? fallbackError;
 }
 
 const CHAIN_ORDER: ChainNode['id'][] = ['frontend', 'relay', 'worker', 'agent', 'llm'];
@@ -200,6 +226,7 @@ export function App() {
   });
   const [expandedThoughts, setExpandedThoughts] = useState<Set<string>>(new Set());
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
+  const [hasNewWhilePaused, setHasNewWhilePaused] = useState(false);
   const chainPanelId = 'terra-status-panel';
 
   const messageIds = useRef<Set<string>>(new Set());
@@ -210,6 +237,11 @@ export function App() {
   const noticeKeysRef = useRef<Set<string>>(new Set());
   const lastWorkerStateRef = useRef<WorkerStateValue>('idle');
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const isPinnedRef = useRef(true);
+  const streamBufferRef = useRef('');
+  const streamRafRef = useRef<number | null>(null);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const reconnectAttemptRef = useRef(0);
   const terraHasResponded = useMemo(() => messages.some((msg) => msg.sender === 'Terra'), [messages]);
   const terraReady = terraHasResponded || llmStatus === 'ready';
   const awaitingTerra = workerState.state === 'queued' || workerState.state === 'processing';
@@ -227,20 +259,36 @@ export function App() {
     return 'Enter the access code';
   })();
 
-  const handleAddMessage = useCallback((msg: Message) => {
-    setMessages((prev) => {
-      if (messageIds.current.has(msg.id)) {
-        return prev;
-      }
-      messageIds.current.add(msg.id);
-      const next = [...prev, msg].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-      if (msg.sender === 'Terra') {
-        setAssistantStream('');
-        setAssistantStreaming(false);
-      }
-      return next;
-    });
-  }, []);
+  const handleAddMessage = useCallback(
+    (msg: Message) => {
+      setMessages((prev) => {
+        if (messageIds.current.has(msg.id)) {
+          return prev;
+        }
+        messageIds.current.add(msg.id);
+        const next = [...prev, msg].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+        if (next.length > MAX_MESSAGE_HISTORY) {
+          const overflow = next.length - MAX_MESSAGE_HISTORY;
+          const dropped = next.splice(0, overflow);
+          dropped.forEach((d) => messageIds.current.delete(d.id));
+        }
+        if (msg.sender === 'Terra') {
+          setAssistantStream('');
+          setAssistantStreaming(false);
+          streamBufferRef.current = '';
+          if (streamRafRef.current) {
+            cancelAnimationFrame(streamRafRef.current);
+            streamRafRef.current = null;
+          }
+        }
+        if (!isPinnedRef.current) {
+          setHasNewWhilePaused(true);
+        }
+        return next;
+      });
+    },
+    []
+  );
 
   const handleChainToggle = useCallback(() => {
     setIsChainExpanded((prev) => !prev);
@@ -252,6 +300,10 @@ export function App() {
     const threshold = 40;
     const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight <= threshold;
     setIsPinnedToBottom(atBottom);
+    isPinnedRef.current = atBottom;
+    if (atBottom) {
+      setHasNewWhilePaused(false);
+    }
   }, []);
 
   const pushSystemNotice = useCallback(
@@ -334,6 +386,9 @@ export function App() {
     messageIds.current.clear();
     setAssistantStream('');
     setAssistantStreaming(false);
+    setHasNewWhilePaused(false);
+    isPinnedRef.current = true;
+    setIsPinnedToBottom(true);
     setLastAckAt(null);
     setLlmStatus('idle');
     setWorkerLastSeenAt(null);
@@ -369,11 +424,14 @@ export function App() {
 
   const scrollToTop = useCallback(() => {
     setIsPinnedToBottom(false);
+    isPinnedRef.current = false;
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }, []);
 
   const scrollToBottom = useCallback(() => {
     setIsPinnedToBottom(true);
+    isPinnedRef.current = true;
+    setHasNewWhilePaused(false);
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
     window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
   }, []);
@@ -395,9 +453,8 @@ export function App() {
     try {
       const stateUrl = new URL(buildUrl(`/api/chat/${chat.id}/worker-state`));
       stateUrl.searchParams.set('accessCode', accessCode);
-      const response = await fetch(stateUrl.toString());
+      const response = await fetchWithRetry(stateUrl.toString(), {}, 2);
       lastStatus = response.status;
-      if (!response.ok) throw new Error('Unable to load worker state');
       const payload = await response.json();
       setWorkerState({
         state: (payload.state as WorkerStateValue) ?? 'idle',
@@ -420,12 +477,16 @@ export function App() {
     try {
       const historyUrl = new URL(buildUrl(`/api/chat/${chat.id}/messages`));
       historyUrl.searchParams.set('accessCode', accessCode);
-      const response = await fetch(historyUrl.toString());
+      const response = await fetchWithRetry(historyUrl.toString(), {}, 2);
       lastStatus = response.status;
-      if (!response.ok) throw new Error('Unable to load history');
       const data: Message[] = await response.json();
-      messageIds.current = new Set(data.map((msg) => msg.id));
-      setMessages(data);
+      const trimmed =
+        data.length > MAX_MESSAGE_HISTORY ? data.slice(data.length - MAX_MESSAGE_HISTORY, data.length) : data;
+      messageIds.current = new Set(trimmed.map((msg) => msg.id));
+      setMessages(trimmed);
+      setHasNewWhilePaused(false);
+      isPinnedRef.current = true;
+      setIsPinnedToBottom(true);
       setFormError(null);
       clearSystemNoticeKey('history');
       await fetchWorkerState();
@@ -455,7 +516,7 @@ export function App() {
       try {
         const url = new URL(buildUrl('/api/health'));
         url.searchParams.set('accessCode', accessCode);
-        const response = await fetch(url.toString());
+        const response = await fetchWithRetry(url.toString(), {}, 2);
         lastStatus = response.status;
         if (!response.ok) throw new Error('Unable to reach Terra');
         const payload: HealthResponse = await response.json();
@@ -496,67 +557,110 @@ export function App() {
   }, [chat, accessCode, clearSystemNoticeKey, handleRelayFailure]);
 
   useEffect(() => {
-    if (!chat?.id || !accessCode.trim()) {
+    let cancelled = false;
+
+    const cleanupSocket = () => {
       if (wsRef.current) {
         wsRef.current.close();
         wsRef.current = null;
       }
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+
+    if (!chat?.id || !accessCode.trim()) {
+      cleanupSocket();
       setSocketStatus('idle');
       setWorkerState(createDefaultWorkerState());
-      return;
+      reconnectAttemptRef.current = 0;
+      return undefined;
     }
 
-    const wsUrl = buildWsUrl('/api/chat', { chatId: chat.id, accessCode });
-    const socket = new WebSocket(wsUrl);
-    wsRef.current = socket;
-    setSocketStatus('connecting');
+    const connect = () => {
+      if (cancelled) return;
+      const wsUrl = buildWsUrl('/api/chat', { chatId: chat.id, accessCode });
+      const socket = new WebSocket(wsUrl);
+      wsRef.current = socket;
+      setSocketStatus('connecting');
 
-    socket.onopen = () => {
-      setSocketStatus('connected');
-      clearSystemNoticeKey('socket');
-    };
-    socket.onerror = () => {
-      setSocketStatus('error');
-      handleRelayFailure('socket', 'stream live updates', null, { suppressFormError: true });
-    };
-    socket.onclose = (event) => {
-      setSocketStatus('idle');
-      if (event.code !== 1000) {
-        handleRelayFailure('socket', 'keep the WebSocket connected', null, { suppressFormError: true });
-      }
-    };
-    socket.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data as string);
-        if (payload?.type === 'workerState') {
-          if (!chat || payload.chatId !== chat.id) {
+      socket.onopen = () => {
+        if (cancelled) return;
+        reconnectAttemptRef.current = 0;
+        setSocketStatus('connected');
+        clearSystemNoticeKey('socket');
+      };
+      socket.onerror = () => {
+        if (cancelled) return;
+        setSocketStatus('error');
+        handleRelayFailure('socket', 'stream live updates', null, { suppressFormError: true });
+      };
+      socket.onclose = (event) => {
+        if (cancelled) return;
+        setSocketStatus('idle');
+        wsRef.current = null;
+        if (event.code !== 1000) {
+          handleRelayFailure('socket', 'keep the WebSocket connected', null, { suppressFormError: true });
+          const attempt = reconnectAttemptRef.current++;
+          const delay = Math.min(1000 * 2 ** attempt, 10_000) + Math.random() * 500;
+          reconnectTimerRef.current = window.setTimeout(connect, delay);
+        }
+      };
+      socket.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data as string);
+          if (payload?.type === 'workerState') {
+            if (!chat || payload.chatId !== chat.id) {
+              return;
+            }
+            setWorkerState({
+              state: (payload.state as WorkerStateValue) ?? 'idle',
+              detail: payload.detail ?? null,
+              updatedAt: payload.updatedAt ?? null
+            });
             return;
           }
-          setWorkerState({
-            state: (payload.state as WorkerStateValue) ?? 'idle',
-            detail: payload.detail ?? null,
-            updatedAt: payload.updatedAt ?? null
-          });
-          return;
-        }
-        if ((payload as AssistantChunkEvent)?.type === 'assistantChunk') {
-          const chunk = payload as AssistantChunkEvent;
-          if (!chat || chunk.chatId !== chat.id) {
+          if ((payload as AssistantChunkEvent)?.type === 'assistantChunk') {
+            const chunk = payload as AssistantChunkEvent;
+            if (!chat || chunk.chatId !== chat.id) {
+              return;
+            }
+            if (chunk.done) {
+              setAssistantStreaming(false);
+              setAssistantStream('');
+              streamBufferRef.current = '';
+              if (streamRafRef.current) {
+                cancelAnimationFrame(streamRafRef.current);
+                streamRafRef.current = null;
+              }
+              return;
+            }
+            setAssistantStreaming(true);
+            streamBufferRef.current = `${streamBufferRef.current}${chunk.content}`;
+            if (!streamRafRef.current) {
+              streamRafRef.current = requestAnimationFrame(() => {
+                setAssistantStream(streamBufferRef.current);
+                streamRafRef.current = null;
+              });
+            }
+            if (!isPinnedRef.current) {
+              setHasNewWhilePaused(true);
+            }
             return;
           }
-          setAssistantStreaming(!chunk.done);
-          setAssistantStream((prev) => (chunk.done ? '' : `${prev}${chunk.content}`));
-          return;
+          handleAddMessage(payload as Message);
+        } catch (error) {
+          console.error('Invalid message payload', error);
         }
-        handleAddMessage(payload as Message);
-      } catch (error) {
-        console.error('Invalid message payload', error);
-      }
+      };
     };
 
+    connect();
     return () => {
-      socket.close();
-      wsRef.current = null;
+      cancelled = true;
+      cleanupSocket();
+      reconnectAttemptRef.current = 0;
     };
   }, [chat, accessCode, handleAddMessage, clearSystemNoticeKey, handleRelayFailure]);
 
@@ -592,6 +696,9 @@ export function App() {
     setFormError(null);
     setMessages([]);
     messageIds.current.clear();
+    setHasNewWhilePaused(false);
+    isPinnedRef.current = true;
+    setIsPinnedToBottom(true);
     setLlmStatus('checking');
     setWorkerLastSeenAt(null);
     setWorkerState(createDefaultWorkerState());
@@ -606,17 +713,18 @@ export function App() {
     }
     let lastStatus: number | null = null;
     try {
-      const response = await fetch(buildUrl(`/api/chat/${chat.id}/messages`), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
+      const response = await fetchWithRetry(
+        buildUrl(`/api/chat/${chat.id}/messages`),
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ content: messageInput.trim(), accessCode })
         },
-        body: JSON.stringify({ content: messageInput.trim(), accessCode })
-      });
+        3
+      );
       lastStatus = response.status;
-      if (!response.ok) {
-        throw new Error('Unable to send message');
-      }
       const message: Message = await response.json();
       handleAddMessage(message);
       setMessageInput('');
@@ -625,8 +733,9 @@ export function App() {
       setWorkerState({ state: 'queued', detail: null, updatedAt: new Date().toISOString() });
       clearSystemNoticeKey('send');
     } catch (error) {
+      const status = (error as { status?: number })?.status ?? lastStatus;
       console.error('Unable to send message', error);
-      handleRelayFailure('send', 'send your message', lastStatus);
+      handleRelayFailure('send', 'send your message', status);
     }
   };
 
@@ -856,6 +965,11 @@ export function App() {
               </button>
             </div>
             <div className="scroll-controls">
+              {hasNewWhilePaused && (
+                <button type="button" className="scroll-controls__badge" onClick={scrollToBottom}>
+                  New messages
+                </button>
+              )}
               <button type="button" onClick={scrollToBottom}>Bottom</button>
               {!isPinnedToBottom && <span className="scroll-controls__status">Auto-scroll paused</span>}
             </div>
